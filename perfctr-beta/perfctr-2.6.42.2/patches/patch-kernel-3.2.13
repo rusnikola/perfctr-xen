@@ -1,0 +1,462 @@
+--- linux-3.2.13/CREDITS
++++ linux-3.2.13-new/CREDITS
+@@ -2789,6 +2789,7 @@
+ E: mikpe@it.uu.se
+ W: http://user.it.uu.se/~mikpe/linux/
+ D: Miscellaneous fixes
++D: Performance-monitoring counters driver
+ 
+ N: Reed H. Petty
+ E: rhp@draper.net
+--- linux-3.2.13/Documentation/ioctl/ioctl-number.txt
++++ linux-3.2.13-new/Documentation/ioctl/ioctl-number.txt
+@@ -312,6 +312,8 @@
+ 					<mailto:michael.klein@puffin.lb.shuttle.de>
+ 0xCD	01	linux/reiserfs_fs.h
+ 0xCF	02	fs/cifs/ioctl.c
++0xD0	all	performance counters	see drivers/perfctr/
++					<mailto:mikpe@it.uu.se>
+ 0xDB	00-0F	drivers/char/mwave/mwavepub.h
+ 0xDD	00-3F	ZFCP device driver	see drivers/s390/scsi/
+ 					<mailto:aherrman@de.ibm.com>
+--- linux-3.2.13/MAINTAINERS
++++ linux-3.2.13-new/MAINTAINERS
+@@ -5100,6 +5100,11 @@
+ F:	arch/*/kernel/perf_callchain.c
+ F:	tools/perf/
+ 
++PERFORMANCE-MONITORING COUNTERS DRIVER
++M:	Mikael Pettersson <mikpe@it.uu.se>
++W:	http://user.it.uu.se/~mikpe/linux/perfctr/
++S:	Maintained
++
+ PERSONALITY HANDLING
+ M:	Christoph Hellwig <hch@infradead.org>
+ L:	linux-abi-devel@lists.sourceforge.net
+--- linux-3.2.13/arch/arm/Kconfig
++++ linux-3.2.13-new/arch/arm/Kconfig
+@@ -1134,6 +1134,10 @@
+ 	  Enable support for iWMMXt context switching at run time if
+ 	  running on a CPU that supports it.
+ 
++if CPU_XSCALE
++source drivers/perfctr/Kconfig
++endif
++
+ #  bool 'Use XScale PMU as timer source' CONFIG_XSCALE_PMU_TIMER
+ config XSCALE_PMU
+ 	bool
+--- linux-3.2.13/arch/arm/include/asm/processor.h
++++ linux-3.2.13-new/arch/arm/include/asm/processor.h
+@@ -42,6 +42,10 @@
+ 	unsigned long		error_code;
+ 							/* debugging	  */
+ 	struct debug_info	debug;
++
++#ifdef CONFIG_PERFCTR_VIRTUAL
++	struct vperfctr		*perfctr;		/* performance counters */
++#endif
+ };
+ 
+ #define INIT_THREAD  {	}
+--- linux-3.2.13/arch/arm/include/asm/system.h
++++ linux-3.2.13-new/arch/arm/include/asm/system.h
+@@ -233,7 +233,9 @@
+ 
+ #define switch_to(prev,next,last)					\
+ do {									\
++	perfctr_suspend_thread(&(prev)->thread);			\
+ 	last = __switch_to(prev,task_thread_info(prev), task_thread_info(next));	\
++	perfctr_resume_thread(&(current)->thread);			\
+ } while (0)
+ 
+ #if defined(CONFIG_CPU_SA1100) || defined(CONFIG_CPU_SA110)
+--- linux-3.2.13/arch/arm/kernel/process.c
++++ linux-3.2.13-new/arch/arm/kernel/process.c
+@@ -25,6 +25,7 @@
+ #include <linux/cpu.h>
+ #include <linux/elfcore.h>
+ #include <linux/pm.h>
++#include <linux/perfctr.h>
+ #include <linux/tick.h>
+ #include <linux/utsname.h>
+ #include <linux/uaccess.h>
+@@ -353,6 +354,7 @@
+ 
+ void release_thread(struct task_struct *dead_task)
+ {
++	perfctr_exit_thread(&current->thread);
+ }
+ 
+ asmlinkage void ret_from_fork(void) __asm__("ret_from_fork");
+@@ -378,6 +380,8 @@
+ 		thread->tp_value = regs->ARM_r3;
+ 
+ 	thread_notify(THREAD_NOTIFY_COPY, thread);
++
++	perfctr_copy_task(p, regs);
+ 
+ 	return 0;
+ }
+--- linux-3.2.13/arch/powerpc/include/asm/processor.h
++++ linux-3.2.13-new/arch/powerpc/include/asm/processor.h
+@@ -240,6 +240,9 @@
+ 	unsigned long	spefscr;	/* SPE & eFP status */
+ 	int		used_spe;	/* set if process has used spe */
+ #endif /* CONFIG_SPE */
++#ifdef CONFIG_PERFCTR_VIRTUAL
++	struct vperfctr *perfctr;	/* performance counters */
++#endif
+ #ifdef CONFIG_KVM_BOOK3S_32_HANDLER
+ 	void*		kvm_shadow_vcpu; /* KVM internal data */
+ #endif /* CONFIG_KVM_BOOK3S_32_HANDLER */
+--- linux-3.2.13/arch/powerpc/kernel/process.c
++++ linux-3.2.13-new/arch/powerpc/kernel/process.c
+@@ -30,6 +30,7 @@
+ #include <linux/init_task.h>
+ #include <linux/export.h>
+ #include <linux/kallsyms.h>
++#include <linux/perfctr.h>
+ #include <linux/mqueue.h>
+ #include <linux/hardirq.h>
+ #include <linux/utsname.h>
+@@ -520,8 +521,10 @@
+ 	 * window where the kernel stack SLB and the kernel stack are out
+ 	 * of sync. Hard disable here.
+ 	 */
++	perfctr_suspend_thread(&prev->thread);
+ 	hard_irq_disable();
+ 	last = _switch(old_thread, new_thread);
++	perfctr_resume_thread(&current->thread);
+ 
+ #ifdef CONFIG_PPC_BOOK3S_64
+ 	if (current_thread_info()->local_flags & _TLF_LAZY_MMU) {
+@@ -671,6 +674,7 @@
+ void exit_thread(void)
+ {
+ 	discard_lazy_cpu_state();
++	perfctr_exit_thread(&current->thread);
+ }
+ 
+ void flush_thread(void)
+@@ -802,6 +806,8 @@
+ #else
+ 	kregs->nip = (unsigned long)ret_from_fork;
+ #endif
++
++	perfctr_copy_task(p, regs);
+ 
+ 	return 0;
+ }
+--- linux-3.2.13/arch/powerpc/platforms/Kconfig.cputype
++++ linux-3.2.13-new/arch/powerpc/platforms/Kconfig.cputype
+@@ -352,4 +352,8 @@
+ config CHECK_CACHE_COHERENCY
+ 	bool
+ 
++if PPC32
++source "drivers/perfctr/Kconfig"
++endif
++
+ endmenu
+--- linux-3.2.13/arch/x86/Kconfig
++++ linux-3.2.13-new/arch/x86/Kconfig
+@@ -1510,6 +1510,8 @@
+ 	  detected and for those versions, this configuration option is
+ 	  ignored. (and a warning is printed during bootup)
+ 
++source "drivers/perfctr/Kconfig"
++
+ source kernel/Kconfig.hz
+ 
+ config KEXEC
+--- linux-3.2.13/arch/x86/include/asm/irq_vectors.h
++++ linux-3.2.13-new/arch/x86/include/asm/irq_vectors.h
+@@ -118,6 +118,7 @@
+  * sources per level' errata.
+  */
+ #define LOCAL_TIMER_VECTOR		0xef
++#define LOCAL_PERFCTR_VECTOR		0xf4
+ 
+ /* up to 32 vectors used for spreading out TLB flushes: */
+ #if NR_CPUS <= 32
+--- linux-3.2.13/arch/x86/include/asm/processor.h
++++ linux-3.2.13-new/arch/x86/include/asm/processor.h
+@@ -473,6 +473,8 @@
+ 	unsigned long		iopl;
+ 	/* Max allowed port in the bitmap, in bytes: */
+ 	unsigned		io_bitmap_max;
++	/* performance counters */
++	struct vperfctr		*perfctr;
+ };
+ 
+ static inline unsigned long native_get_debugreg(int regno)
+--- linux-3.2.13/arch/x86/include/asm/system.h
++++ linux-3.2.13-new/arch/x86/include/asm/system.h
+@@ -56,6 +56,7 @@
+ 	 */								\
+ 	unsigned long ebx, ecx, edx, esi, edi;				\
+ 									\
++	perfctr_suspend_thread(&(prev)->thread);			\
+ 	asm volatile("pushfl\n\t"		/* save    flags */	\
+ 		     "pushl %%ebp\n\t"		/* save    EBP   */	\
+ 		     "movl %%esp,%[prev_sp]\n\t"	/* save    ESP   */ \
+@@ -122,7 +123,8 @@
+ #endif	/* CC_STACKPROTECTOR */
+ 
+ /* Save restore flags to clear handle leaking NT */
+-#define switch_to(prev, next, last) \
++#define switch_to(prev, next, last) do { \
++	perfctr_suspend_thread(&(prev)->thread); \
+ 	asm volatile(SAVE_CONTEXT					  \
+ 	     "movq %%rsp,%P[threadrsp](%[prev])\n\t" /* save RSP */	  \
+ 	     "movq %P[threadrsp](%[next]),%%rsp\n\t" /* restore RSP */	  \
+@@ -143,7 +145,8 @@
+ 	       [thread_info] "i" (offsetof(struct task_struct, stack)),   \
+ 	       [current_task] "m" (current_task)			  \
+ 	       __switch_canary_iparam					  \
+-	     : "memory", "cc" __EXTRA_CLOBBER)
++	     : "memory", "cc" __EXTRA_CLOBBER); \
++} while (0)
+ #endif
+ 
+ #ifdef __KERNEL__
+--- linux-3.2.13/arch/x86/kernel/cpu/perf_event.c
++++ linux-3.2.13-new/arch/x86/kernel/cpu/perf_event.c
+@@ -1124,6 +1124,9 @@
+ 
+ 	pr_info("Performance Events: ");
+ 
++	/* disable it since we use perfctr */
++	return 0;
++
+ 	switch (boot_cpu_data.x86_vendor) {
+ 	case X86_VENDOR_INTEL:
+ 		err = intel_pmu_init();
+--- linux-3.2.13/arch/x86/kernel/entry_32.S
++++ linux-3.2.13-new/arch/x86/kernel/entry_32.S
+@@ -858,6 +858,23 @@
+ /* The include is where all of the SMP etc. interrupts come from */
+ #include <asm/entry_arch.h>
+ 
++#if defined(CONFIG_X86_LOCAL_APIC) && defined(CONFIG_KPERFCTR)
++ENTRY(perfctr_interrupt)
++	RING0_INT_FRAME
++	pushl $~(LOCAL_PERFCTR_VECTOR)
++	CFI_ADJUST_CFA_OFFSET 4
++	SAVE_ALL
++	TRACE_IRQS_OFF
++	pushl %esp
++	CFI_ADJUST_CFA_OFFSET 4
++	call smp_perfctr_interrupt
++	addl $4, %esp
++	CFI_ADJUST_CFA_OFFSET -4
++	jmp ret_from_intr
++	CFI_ENDPROC
++ENDPROC(perfctr_interrupt)
++#endif
++
+ ENTRY(coprocessor_error)
+ 	RING0_INT_FRAME
+ 	pushl_cfi $0
+--- linux-3.2.13/arch/x86/kernel/entry_64.S
++++ linux-3.2.13-new/arch/x86/kernel/entry_64.S
+@@ -1009,6 +1009,11 @@
+ 	irq_work_interrupt smp_irq_work_interrupt
+ #endif
+ 
++#if defined(CONFIG_X86_LOCAL_APIC) && defined(CONFIG_KPERFCTR)
++apicinterrupt LOCAL_PERFCTR_VECTOR \
++	perfctr_interrupt smp_perfctr_interrupt
++#endif
++
+ /*
+  * Exception entry points.
+  */
+--- linux-3.2.13/arch/x86/kernel/irqinit.c
++++ linux-3.2.13-new/arch/x86/kernel/irqinit.c
+@@ -24,6 +24,7 @@
+ #include <asm/apic.h>
+ #include <asm/setup.h>
+ #include <asm/i8259.h>
++#include <asm/perfctr.h>
+ #include <asm/traps.h>
+ #include <asm/prom.h>
+ 
+@@ -311,6 +312,8 @@
+ 		if (!test_bit(i, used_vectors))
+ 			set_intr_gate(i, interrupt[i-FIRST_EXTERNAL_VECTOR]);
+ 	}
++
++	perfctr_vector_init();
+ 
+ 	if (!acpi_ioapic && !of_ioapic)
+ 		setup_irq(2, &irq2);
+--- linux-3.2.13/arch/x86/kernel/process.c
++++ linux-3.2.13-new/arch/x86/kernel/process.c
+@@ -8,6 +8,7 @@
+ #include <linux/module.h>
+ #include <linux/pm.h>
+ #include <linux/clockchips.h>
++#include <linux/perfctr.h>
+ #include <linux/random.h>
+ #include <linux/user-return-notifier.h>
+ #include <linux/dmi.h>
+@@ -82,6 +83,7 @@
+ 		put_cpu();
+ 		kfree(bp);
+ 	}
++	perfctr_exit_thread(t);
+ }
+ 
+ void show_regs(struct pt_regs *regs)
+--- linux-3.2.13/arch/x86/kernel/process_32.c
++++ linux-3.2.13-new/arch/x86/kernel/process_32.c
+@@ -26,6 +26,7 @@
+ #include <linux/delay.h>
+ #include <linux/reboot.h>
+ #include <linux/init.h>
++#include <linux/perfctr.h>
+ #include <linux/mc146818rtc.h>
+ #include <linux/module.h>
+ #include <linux/kallsyms.h>
+@@ -213,6 +214,9 @@
+ 	task_user_gs(p) = get_user_gs(regs);
+ 
+ 	p->thread.io_bitmap_ptr = NULL;
++
++	perfctr_copy_task(p, regs);
++
+ 	tsk = current;
+ 	err = -ENOMEM;
+ 
+@@ -359,6 +363,8 @@
+ 	switch_fpu_finish(next_p, fpu);
+ 
+ 	percpu_write(current_task, next_p);
++
++	perfctr_resume_thread(next);
+ 
+ 	return prev_p;
+ }
+--- linux-3.2.13/arch/x86/kernel/process_64.c
++++ linux-3.2.13-new/arch/x86/kernel/process_64.c
+@@ -29,6 +29,7 @@
+ #include <linux/delay.h>
+ #include <linux/module.h>
+ #include <linux/ptrace.h>
++#include <linux/perfctr.h>
+ #include <linux/notifier.h>
+ #include <linux/kprobes.h>
+ #include <linux/kdebug.h>
+@@ -292,6 +293,8 @@
+ 	err = -ENOMEM;
+ 	memset(p->thread.ptrace_bps, 0, sizeof(p->thread.ptrace_bps));
+ 
++	perfctr_copy_task(p, regs);
++
+ 	if (unlikely(test_tsk_thread_flag(me, TIF_IO_BITMAP))) {
+ 		p->thread.io_bitmap_ptr = kmalloc(IO_BITMAP_BYTES, GFP_KERNEL);
+ 		if (!p->thread.io_bitmap_ptr) {
+@@ -472,6 +475,8 @@
+ 	if (unlikely(task_thread_info(next_p)->flags & _TIF_WORK_CTXSW_NEXT ||
+ 		     task_thread_info(prev_p)->flags & _TIF_WORK_CTXSW_PREV))
+ 		__switch_to_xtra(prev_p, next_p, tss);
++
++	perfctr_resume_thread(next);
+ 
+ 	return prev_p;
+ }
+--- linux-3.2.13/drivers/Makefile
++++ linux-3.2.13-new/drivers/Makefile
+@@ -102,6 +102,7 @@
+ obj-y				+= leds/
+ obj-$(CONFIG_INFINIBAND)	+= infiniband/
+ obj-$(CONFIG_SGI_SN)		+= sn/
++obj-$(CONFIG_KPERFCTR)		+= perfctr/
+ obj-y				+= firmware/
+ obj-$(CONFIG_CRYPTO)		+= crypto/
+ obj-$(CONFIG_SUPERH)		+= sh/
+--- linux-3.2.13/fs/exec.c
++++ linux-3.2.13-new/fs/exec.c
+@@ -48,6 +48,7 @@
+ #include <linux/tsacct_kern.h>
+ #include <linux/cn_proc.h>
+ #include <linux/audit.h>
++#include <linux/perfctr.h>
+ #include <linux/tracehook.h>
+ #include <linux/kmod.h>
+ #include <linux/fsnotify.h>
+@@ -1093,6 +1094,7 @@
+ 
+ 	set_fs(USER_DS);
+ 	current->flags &= ~(PF_RANDOMIZE | PF_KTHREAD);
++	perfctr_flush_thread(&current->thread);
+ 	flush_thread();
+ 	current->personality &= ~bprm->per_clear;
+ 
+--- linux-3.2.13/kernel/exit.c
++++ linux-3.2.13-new/kernel/exit.c
+@@ -29,6 +29,7 @@
+ #include <linux/proc_fs.h>
+ #include <linux/kthread.h>
+ #include <linux/mempolicy.h>
++#include <linux/perfctr.h>
+ #include <linux/taskstats_kern.h>
+ #include <linux/delayacct.h>
+ #include <linux/freezer.h>
+@@ -198,6 +199,7 @@
+ 			leader->exit_state = EXIT_DEAD;
+ 	}
+ 
++	perfctr_release_task(p);
+ 	write_unlock_irq(&tasklist_lock);
+ 	release_thread(p);
+ 	call_rcu(&p->rcu, delayed_put_task_struct);
+--- linux-3.2.13/kernel/pid.c
++++ linux-3.2.13-new/kernel/pid.c
+@@ -428,6 +428,7 @@
+ {
+ 	return find_task_by_pid_ns(vnr, current->nsproxy->pid_ns);
+ }
++EXPORT_SYMBOL(find_task_by_vpid);
+ 
+ struct pid *get_task_pid(struct task_struct *task, enum pid_type type)
+ {
+--- linux-3.2.13/kernel/sched.c
++++ linux-3.2.13-new/kernel/sched.c
+@@ -54,6 +54,7 @@
+ #include <linux/cpu.h>
+ #include <linux/cpuset.h>
+ #include <linux/percpu.h>
++#include <linux/perfctr.h>
+ #include <linux/proc_fs.h>
+ #include <linux/seq_file.h>
+ #include <linux/stop_machine.h>
+@@ -6204,6 +6205,8 @@
+ 	struct rq *rq;
+ 	unsigned int dest_cpu;
+ 	int ret = 0;
++
++	perfctr_set_cpus_allowed(p, *new_mask); /* XXX: convert to _ptr */
+ 
+ 	rq = task_rq_lock(p, &flags);
+ 
+--- linux-3.2.13/kernel/timer.c
++++ linux-3.2.13-new/kernel/timer.c
+@@ -33,6 +33,7 @@
+ #include <linux/jiffies.h>
+ #include <linux/posix-timers.h>
+ #include <linux/cpu.h>
++#include <linux/perfctr.h>
+ #include <linux/syscalls.h>
+ #include <linux/delay.h>
+ #include <linux/tick.h>
+@@ -1290,6 +1291,7 @@
+ 
+ 	/* Note: this timer irq context must be accounted for as well. */
+ 	account_process_tick(p, user_tick);
++	perfctr_sample_thread(&p->thread);
+ 	run_local_timers();
+ 	rcu_check_callbacks(cpu, user_tick);
+ 	printk_tick();

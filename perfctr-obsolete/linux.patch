@@ -1,0 +1,120 @@
+diff -urN linux-2.6-pvops.git/arch/x86/include/asm/fixmap.h linux-2.6-pvops.git.new/arch/x86/include/asm/fixmap.h
+--- linux-2.6-pvops.git/arch/x86/include/asm/fixmap.h	2010-09-22 14:00:31.000000000 -0400
++++ linux-2.6-pvops.git.new/arch/x86/include/asm/fixmap.h	2010-10-22 16:43:37.000000000 -0400
+@@ -112,6 +112,13 @@
+ #endif
+ #endif
+ #ifdef CONFIG_PARAVIRT
++	FIX_PARAVIRT_PERFCTR6,
++	FIX_PARAVIRT_PERFCTR5,
++	FIX_PARAVIRT_PERFCTR4,
++	FIX_PARAVIRT_PERFCTR3,
++	FIX_PARAVIRT_PERFCTR2,
++	FIX_PARAVIRT_PERFCTR1,
++	FIX_PARAVIRT_PERFCTR0,
+ 	FIX_PARAVIRT_BOOTMAP,
+ #endif
+ 	FIX_TEXT_POKE1,	/* reserve 2 pages for text_poke() */
+diff -urN linux-2.6-pvops.git/arch/x86/include/asm/xen/hypercall.h linux-2.6-pvops.git.new/arch/x86/include/asm/xen/hypercall.h
+--- linux-2.6-pvops.git/arch/x86/include/asm/xen/hypercall.h	2010-09-22 14:00:31.000000000 -0400
++++ linux-2.6-pvops.git.new/arch/x86/include/asm/xen/hypercall.h	2010-10-26 19:59:57.000000000 -0400
+@@ -292,6 +292,12 @@
+ 	return _hypercall2(int, sched_op_new, cmd, arg);
+ }
+ 
++static inline int
++HYPERVISOR_perfctr_op(int cmd, void *arg)
++{
++	return _hypercall2(int, perfctr_op, cmd, arg);
++}
++
+ static inline long
+ HYPERVISOR_set_timer_op(u64 timeout)
+ {
+diff -urN linux-2.6-pvops.git/arch/x86/include/asm/xen/interface.h linux-2.6-pvops.git.new/arch/x86/include/asm/xen/interface.h
+--- linux-2.6-pvops.git/arch/x86/include/asm/xen/interface.h	2010-09-22 13:27:09.000000000 -0400
++++ linux-2.6-pvops.git.new/arch/x86/include/asm/xen/interface.h	2010-10-26 20:00:31.000000000 -0400
+@@ -9,6 +9,9 @@
+ #ifndef _ASM_X86_XEN_INTERFACE_H
+ #define _ASM_X86_XEN_INTERFACE_H
+ 
++/* Hypercall for perfctr-xen control */
++#define __HYPERVISOR_perfctr_op __HYPERVISOR_arch_1
++
+ #ifdef __XEN__
+ #define __DEFINE_GUEST_HANDLE(name, type) \
+     typedef struct { type *p; } __guest_handle_ ## name
+@@ -68,6 +71,9 @@
+ /* Maximum number of virtual CPUs in multi-processor guests. */
+ #define MAX_VIRT_CPUS 32
+ 
++#define XSI_SHIFT     15
++#define XSI_SIZE      (1 << XSI_SHIFT)
++
+ /*
+  * SEGMENT DESCRIPTOR TABLES
+  */
+diff -urN linux-2.6-pvops.git/arch/x86/xen/enlighten.c linux-2.6-pvops.git.new/arch/x86/xen/enlighten.c
+--- linux-2.6-pvops.git/arch/x86/xen/enlighten.c	2010-09-22 14:00:31.000000000 -0400
++++ linux-2.6-pvops.git.new/arch/x86/xen/enlighten.c	2010-10-22 16:43:37.000000000 -0400
+@@ -866,15 +866,19 @@
+ void xen_setup_shared_info(void)
+ {
+ 	if (!xen_feature(XENFEAT_auto_translated_physmap)) {
+-		set_fixmap(FIX_PARAVIRT_BOOTMAP,
+-			   xen_start_info->shared_info);
++		unsigned int i;
++		/* do fixmap for FIX_PARAVIRT_PERFCTRx as well */
++		for (i = 0; i < XSI_SIZE / PAGE_SIZE; i++) {
++			set_fixmap(FIX_PARAVIRT_BOOTMAP - i,
++			   xen_start_info->shared_info + i * PAGE_SIZE);
++		}
+ 
+ 		HYPERVISOR_shared_info =
+ 			(struct shared_info *)fix_to_virt(FIX_PARAVIRT_BOOTMAP);
+-	} else
++	} else {
+ 		HYPERVISOR_shared_info =
+ 			(struct shared_info *)__va(xen_start_info->shared_info);
+-
++	}
+ #ifndef CONFIG_SMP
+ 	/* In UP this is as good a place as any to set up shared info */
+ 	xen_setup_vcpu_info_placement();
+@@ -1342,7 +1346,7 @@
+ 	static struct shared_info *shared_info_page = 0;
+ 
+ 	if (!shared_info_page)
+-		shared_info_page = (struct shared_info *) alloc_bootmem_pages(PAGE_SIZE);
++		shared_info_page = (struct shared_info *) alloc_bootmem_pages(XSI_SIZE);
+ 	xatp.domid = DOMID_SELF;
+ 	xatp.idx = 0;
+ 	xatp.space = XENMAPSPACE_shared_info;
+diff -urN linux-2.6-pvops.git/arch/x86/xen/mmu.c linux-2.6-pvops.git.new/arch/x86/xen/mmu.c
+--- linux-2.6-pvops.git/arch/x86/xen/mmu.c	2010-09-22 14:00:31.000000000 -0400
++++ linux-2.6-pvops.git.new/arch/x86/xen/mmu.c	2010-10-22 16:43:37.000000000 -0400
+@@ -2250,6 +2250,13 @@
+ #endif
+ 
+ 	case FIX_PARAVIRT_BOOTMAP:
++	case FIX_PARAVIRT_PERFCTR0:
++	case FIX_PARAVIRT_PERFCTR1:
++	case FIX_PARAVIRT_PERFCTR2:
++	case FIX_PARAVIRT_PERFCTR3:
++	case FIX_PARAVIRT_PERFCTR4:
++	case FIX_PARAVIRT_PERFCTR5:
++	case FIX_PARAVIRT_PERFCTR6:
+ 		/* This is an MFN, but it isn't an IO mapping from the
+ 		   IO domain */
+ 		pte = mfn_pte(phys, prot);
+diff -urN linux-2.6-pvops.git/include/xen/interface/xen.h linux-2.6-pvops.git.new/include/xen/interface/xen.h
+--- linux-2.6-pvops.git/include/xen/interface/xen.h	2010-09-22 13:27:14.000000000 -0400
++++ linux-2.6-pvops.git.new/include/xen/interface/xen.h	2010-10-22 16:46:37.000000000 -0400
+@@ -80,6 +80,7 @@
+ #define VIRQ_DOM_EXC    3  /* (DOM0) Exceptional event for some domain.   */
+ #define VIRQ_DEBUGGER   6  /* (DOM0) A domain has paused for debugging.   */
+ #define VIRQ_PCPU_STATE 9  /* (DOM0) PCPU state changed                   */
++#define VIRQ_PERFCTR    11 /* Perfctr counter overflow.                   */
+ 
+ /* Architecture-specific VIRQ definitions. */
+ #define VIRQ_ARCH_0    16

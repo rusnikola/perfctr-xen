@@ -1,0 +1,1633 @@
+--- perfctr-2.6.42.2/INSTALL
++++ perfctr-2.6.42.2-new/INSTALL
+@@ -82,6 +82,19 @@
+    You should also enable at least CONFIG_PERFCTR, CONFIG_PERFCTR_VIRTUAL,
+    and CONFIG_PERFCTR_GLOBAL.
+ 
++   To enable wide performance counters (use 40/48 bit hardware counters
++   instead of 32 bit), you have to specify CONFIG_PERCTR_WIDECTR=y.
++   This feature is experimental and is not recommended if you work on
++   a normal non-virtualized Linux system.
++
++   If you use Linux on top of Xen as a paravirtualized or hybrid HVM guest,
++   you must specify CONFIG_PERFCTR_XEN=y. CONFIG_PERFCTR_XEN will
++   also enable CONFIG_PERFCTR_WIDECTR (wide counters support).
++   Notice that you should NOT specify this option for normal Linux
++   configuration or for fully-virtualized HVM guest.
++   Make sure that you also enable this option in 'usr.lib/Makefile' by adding
++   -DCONFIG_PERFCTR_XEN parameter to the CFLAGS line.
++
+    You may also select CONFIG_PERFCTR=m to build the bulk of the driver
+    as a loadable kernel module; the module will be named `perfctr'.
+ 
+--- perfctr-2.6.42.2/README
++++ perfctr-2.6.42.2-new/README
+@@ -56,7 +56,6 @@
+ are possible. However, all high-level facilities implemented
+ by the driver are still available.
+ 
+-
+ Features
+ --------
+ Each Linux process has its own set of "virtual" PMCs. That is,
+@@ -86,7 +85,14 @@
+ Support for performance-counter overflow interrupts is provided
+ where such support exists in the processors.
+ 
++This version of perfctr can also work with paravirtualized or hyrbid HVM
++guests running in Xen. You must specify the corresponding
++option to configure perfctr correctly (see INSTALL). This will enable
++a special mode in which counters will be virtualized on per-VCPU basis.
++Virtualization is done in a very efficient manner but may require
++a special hypercall invocation from time to time.
+ 
++
+ Limitations
+ -----------
+ - Kernels older than 2.6.0 are not supported.
+@@ -105,6 +111,8 @@
+   listed in the OTHERS file.)
+ - Centaur WinChip C6/2/3 support requires that the TSC is disabled.
+   See linux/drivers/perfctr/x86.c for further information.
++- When compiled with Xen support, perfctr lacks support for pre-MMX processors
++  which do not have the rdpmc instruction.
+ 
+ 
+ Availability
+--- perfctr-2.6.42.2/linux/arch/arm/include/asm/perfctr.h
++++ perfctr-2.6.42.2-new/linux/arch/arm/include/asm/perfctr.h
+@@ -6,6 +6,9 @@
+ #ifndef _ASM_ARM_PERFCTR_H
+ #define _ASM_ARM_PERFCTR_H
+ 
++#define perfctr_get_ctrvar(x)   (x)
++#define perfctr_set_ctrvar(x,y) ((x) = (y))
++
+ /* perfctr_info.cpu_type values */
+ #define PERFCTR_ARM_XSC1	1
+ #define PERFCTR_ARM_XSC2	2
+@@ -148,7 +151,7 @@
+ 
+ /* The type of a perfctr overflow interrupt handler.
+    It will be called in IRQ context, with preemption disabled. */
+-typedef void (*perfctr_ihandler_t)(unsigned long pc);
++typedef void (*perfctr_ihandler_t)(void);
+ 
+ /* Operations related to overflow interrupt handling. */
+ #ifdef CONFIG_PERFCTR_INTERRUPT_SUPPORT
+--- perfctr-2.6.42.2/linux/arch/powerpc/include/asm/perfctr.h
++++ perfctr-2.6.42.2-new/linux/arch/powerpc/include/asm/perfctr.h
+@@ -6,6 +6,9 @@
+ #ifndef _ASM_PPC_PERFCTR_H
+ #define _ASM_PPC_PERFCTR_H
+ 
++#define perfctr_get_ctrvar(x)   (x)
++#define perfctr_set_ctrvar(x,y) ((x) = (y))
++
+ /* perfctr_info.cpu_type values */
+ #define PERFCTR_PPC_GENERIC	0
+ #define PERFCTR_PPC_604		1
+@@ -150,7 +153,7 @@
+ 
+ /* The type of a perfctr overflow interrupt handler.
+    It will be called in IRQ context, with preemption disabled. */
+-typedef void (*perfctr_ihandler_t)(unsigned long pc);
++typedef void (*perfctr_ihandler_t)(void);
+ 
+ /* Operations related to overflow interrupt handling. */
+ #ifdef CONFIG_PERFCTR_INTERRUPT_SUPPORT
+--- perfctr-2.6.42.2/linux/arch/x86/include/asm/perfctr.h
++++ perfctr-2.6.42.2-new/linux/arch/x86/include/asm/perfctr.h
+@@ -2,10 +2,40 @@
+  * x86/x86_64 Performance-Monitoring Counters driver
+  *
+  * Copyright (C) 1999-2010  Mikael Pettersson
++ *
++ * Support for Xen/Dom
++ * Copyright (C) 2010 Ruslan Nikolaev
++ *
++ * Note: This file is also being used by performance virtualization
++ * module in Xen hypervisor for which CONFIG_PMUSTATE_VIRT macro is
++ * defined (the file is placed at asm/perfctr.h).
++ * The macro CONFIG_PERFCTR_XEN must be used by Linux guest perfctr
++ * package, so that it work with the virtualization module properly.
+  */
+ #ifndef _ASM_X86_PERFCTR_H
+ #define _ASM_X86_PERFCTR_H
+ 
++#ifdef CONFIG_PMUSTATE_VIRT /* Xen */
++# include <asm/perfctr_glue.h>
++# ifndef CONFIG_PERFCTR_WIDECTR
++#  define CONFIG_PERFCTR_WIDECTR /* Always use wide counters */
++# endif
++#endif
++
++#ifdef CONFIG_PERFCTR_XEN /* Dom */
++# ifndef CONFIG_PERFCTR_WIDECTR
++#  define CONFIG_PERFCTR_WIDECTR /* Always use wide counters */
++# endif
++#endif
++
++#ifdef CONFIG_PERFCTR_WIDECTR
++typedef unsigned long long perfctr_counter_t;
++typedef long long perfctr_scounter_t;
++#else
++typedef unsigned int perfctr_counter_t;
++typedef int perfctr_scounter_t;
++#endif
++
+ /* cpu_type values */
+ #define PERFCTR_X86_GENERIC	0	/* any x86 with rdtsc */
+ #define PERFCTR_X86_INTEL_P5	1	/* no rdpmc */
+@@ -67,29 +97,43 @@
+ 	unsigned int _reserved4;
+ };
+ 
++/* perfctr_cpu_state spans a single page */
++#define PERFCTR_CPU_STATE_SIZE 4096
++
+ struct perfctr_cpu_state {
+ 	unsigned int cstatus;
++#ifdef CONFIG_PERFCTR_WIDECTR /* used as a padding if not Xen/Dom */
++	unsigned int smp_id;
++#endif
+ 	struct {	/* k1 is opaque in the user ABI */
+ 		unsigned int id;
+ 		int isuspend_cpu;
+ 	} k1;
+ 	/* The two tsc fields must be inlined. Placing them in a
+ 	   sub-struct causes unwanted internal padding on x86-64. */
+-	unsigned int tsc_start;
++	perfctr_counter_t tsc_start;
+ 	unsigned long long tsc_sum;
+ 	struct {
++#ifdef CONFIG_PERFCTR_WIDECTR /* moved the field here to preserve padding */
++# define P4_ESCR_MAP(state, i) ((state)->pmc[i].p4_escr_map)
++		unsigned int p4_escr_map;
++#endif
+ 		unsigned int map;
+-		unsigned int start;
++		perfctr_counter_t start;
+ 		unsigned long long sum;
+ 	} pmc[18];	/* the size is not part of the user ABI */
+-#ifdef __KERNEL__
++        /* __KERNEL__ */
+ 	struct perfctr_cpu_control control;
+ 	unsigned int core2_fixed_ctr_ctrl;
++#ifndef CONFIG_PERFCTR_WIDECTR
++# define P4_ESCR_MAP(state, i) ((state)->p4_escr_map[i])
+ 	unsigned int p4_escr_map[18];
+-#ifdef CONFIG_PERFCTR_INTERRUPT_SUPPORT
++#endif
++        /* CONFIG_PERFCTR_INTERRUPT_SUPPORT */
+ 	unsigned int pending_interrupt;
++#ifdef CONFIG_PERFCTR_WIDECTR
++	unsigned int _pad;
+ #endif
+-#endif
+ };
+ 
+ /* cstatus is a re-encoding of control.tsc_on/nractrs/nrictrs
+@@ -134,6 +178,58 @@
+ 	return cstatus & (0x7F << 16);
+ }
+ 
++#if (defined(__x86_64__) || !defined(CONFIG_PERFCTR_WIDECTR))
++
++/* Safe 64-bit atomic get and set operations */
++# define perfctr_get_ctrvar(x)   (x)
++# define perfctr_set_ctrvar(x,y) ((x) = (y))
++
++#else /* __i386__ && CONFIG_PEFRCTR_WIDECTR */
++
++/* atomic 64-bit get operation */
++static inline perfctr_counter_t _perfctr_get_ctrvar(perfctr_counter_t *var)
++{
++	perfctr_counter_t res;
++	__asm__ __volatile__ (
++		"1: movl %2, %%edx\n"
++		"movl %1, %%eax\n"
++		"movl %%edx, %%ecx\n"
++		"movl %%eax, %%ebx\n"
++		"lock\n"
++		"cmpxchg8b %3\n"
++		"jne 1b"
++		: "=&A" (res)
++		: "m" (*((uint32_t *)var)), "m" (*((uint32_t *)var+1)), "m" (*var)
++		: "ecx", "ebx", "cc"
++	);
++	return res;
++}
++
++/* atomic 64-bit set operation */
++static inline void _perfctr_set_ctrvar(perfctr_counter_t *var, perfctr_counter_t val)
++{
++	union {
++		uint64_t v64;
++		uint32_t v32[2];
++	} nval;
++	nval.v64 = val;
++	__asm__ __volatile__ (
++		"1: movl %2, %%edx\n"
++		"movl %1, %%eax\n"
++		"lock\n"
++		"cmpxchg8b %0\n"
++		"jne 1b"
++		:
++		: "m" (*var), "m" (*((uint32_t *)var)), "m" (*((uint32_t *)var+1)), "b" (nval.v32[0]), "c" (nval.v32[1])
++		: "eax", "edx", "cc", "memory"
++	);
++}
++
++# define perfctr_get_ctrvar(x)   (_perfctr_get_ctrvar(&(x)))
++# define perfctr_set_ctrvar(x,y) (_perfctr_set_ctrvar(&(x),y))
++
++#endif
++
+ /*
+  * 'struct siginfo' support for perfctr overflow signals.
+  * In unbuffered mode, si_code is set to SI_PMC_OVF and a bitmask
+@@ -194,7 +290,7 @@
+ 
+ /* The type of a perfctr overflow interrupt handler.
+    It will be called in IRQ context, with preemption disabled. */
+-typedef void (*perfctr_ihandler_t)(unsigned long pc);
++typedef void (*perfctr_ihandler_t)(void);
+ 
+ /* Operations related to overflow interrupt handling. */
+ #ifdef CONFIG_X86_LOCAL_APIC
+--- perfctr-2.6.42.2/linux/drivers/perfctr/Kconfig
++++ perfctr-2.6.42.2-new/linux/drivers/perfctr/Kconfig
+@@ -88,4 +88,29 @@
+ 	depends on PERFCTR
+ 	default y if X86 && SMP
+ 
++config PERFCTR_WIDECTR
++	bool "Wide performance counters support"
++	depends on PERFCTR
++	help
++	  This option enables wide physical counters (40/48 bits). In general,
++	  you need not use this option. However, a special Xen/Dom
++	  configuration requires this option to be enabled.
++
++	  If unsure, say N.
++
++config PERFCTR_XEN
++	prompt "Performance counters for Xen/Dom" if !PERFCTR_INIT_TESTS
++	bool
++	depends on PERFCTR_WIDECTR
++	default n
++	help
++	  This will enable a special configuration for Xen/Dom which relies
++	  on perfctr module in the hypervisor. You must make sure that
++	  the hypervisor has the built-in module, and a guest operating system
++	  runs in paravirtualized or hybrid HVM mode. This option is not
++	  required for fully-virtualized HVM mode.
++
++	  This option should NOT be used for normal Linux configuration.
++	  If unsure, say N.
++
+ endmenu
+--- perfctr-2.6.42.2/linux/drivers/perfctr/init.c
++++ perfctr-2.6.42.2-new/linux/drivers/perfctr/init.c
+@@ -23,6 +23,10 @@
+ #include "version.h"
+ #include "marshal.h"
+ 
++#ifdef CONFIG_PERFCTR_XEN
++# include "virq.h"
++#endif
++
+ MODULE_AUTHOR("Mikael Pettersson <mikpe@it.uu.se>");
+ MODULE_DESCRIPTION("Performance-monitoring counters driver");
+ MODULE_LICENSE("GPL");
+@@ -191,6 +195,12 @@
+ int __init perfctr_init(void)
+ {
+ 	int err;
++#ifdef CONFIG_PERFCTR_XEN
++	if( (err = xen_perfctr_virq_bind()) != 0 ) {
++		printk(KERN_ERR "perfctr: cannot register xen interrupts\n");
++		return err;
++	}
++#endif
+ 	if( (err = perfctr_cpu_init()) != 0 ) {
+ 		printk(KERN_INFO "perfctr: not supported by this processor\n");
+ 		return err;
+@@ -217,6 +227,9 @@
+ 	misc_deregister(&dev_perfctr);
+ 	vperfctr_exit();
+ 	perfctr_cpu_exit();
++#ifdef CONFIG_PERFCTR_XEN
++	xen_perfctr_virq_unbind();
++#endif
+ }
+ 
+ module_init(perfctr_init)
+--- perfctr-2.6.42.2/linux/drivers/perfctr/ppc_setup.c
++++ perfctr-2.6.42.2-new/linux/drivers/perfctr/ppc_setup.c
+@@ -19,7 +19,7 @@
+ #include "compat.h"
+ 
+ #ifdef CONFIG_PERFCTR_INTERRUPT_SUPPORT
+-static void perfctr_default_ihandler(unsigned long pc)
++static void perfctr_default_ihandler(void)
+ {
+ }
+ 
+@@ -28,7 +28,7 @@
+ void do_perfctr_interrupt(struct pt_regs *regs)
+ {
+ 	preempt_disable();
+-	(*perfctr_ihandler)(instruction_pointer(regs));
++	(*perfctr_ihandler)();
+ 	preempt_enable_no_resched();
+ }
+ 
+--- /dev/null
++++ perfctr-2.6.42.2-new/linux/drivers/perfctr/virq.h
+@@ -0,0 +1,5 @@
++#ifdef CONFIG_PERFCTR_XEN
++void xen_perfctr_virq_unbind(void);
++int xen_perfctr_virq_bind(void);
++#endif
++
+--- perfctr-2.6.42.2/linux/drivers/perfctr/virtual.c
++++ perfctr-2.6.42.2-new/linux/drivers/perfctr/virtual.c
+@@ -22,6 +22,15 @@
+ #include <asm/io.h>
+ #include <asm/uaccess.h>
+ 
++#ifdef CONFIG_PERFCTR_XEN
++# include <xen/interface/xen.h>
++# include <xen/xen-ops.h>
++# include <asm/xen/page.h>
++# define PERFCTR_KSTATE_SIZE (PAGE_SIZE + 7 * PAGE_SIZE)
++#else
++# define PERFCTR_KSTATE_SIZE PAGE_SIZE
++#endif
++
+ #include "compat.h"
+ #include "virtual.h"
+ #include "marshal.h"
+@@ -104,7 +113,7 @@
+ 
+ #ifdef CONFIG_PERFCTR_INTERRUPT_SUPPORT
+ 
+-static void vperfctr_ihandler(unsigned long pc);
++static void vperfctr_ihandler(void);
+ static void vperfctr_handle_overflow(struct task_struct*, struct vperfctr*);
+ 
+ static inline void vperfctr_set_ihandler(void)
+@@ -336,7 +345,7 @@
+ #ifdef CONFIG_PERFCTR_INTERRUPT_SUPPORT
+ /* vperfctr interrupt handler (XXX: add buffering support) */
+ /* PREEMPT note: called in IRQ context with preemption disabled. */
+-static void vperfctr_ihandler(unsigned long pc)
++static void vperfctr_ihandler(void)
+ {
+ 	struct task_struct *tsk = current;
+ 	struct vperfctr *perfctr;
+@@ -721,12 +730,13 @@
+ static int vperfctr_mmap(struct file *filp, struct vm_area_struct *vma)
+ {
+ 	struct vperfctr *perfctr;
++	int res;
+ 
+ #ifdef CONFIG_ARM
+ #define _PAGE_RW	L_PTE_WRITE
+ #endif
+ 	/* Only allow read-only mapping of first page. */
+-	if ((vma->vm_end - vma->vm_start) != PAGE_SIZE ||
++	if ((vma->vm_end - vma->vm_start) != PERFCTR_KSTATE_SIZE ||
+ 	    vma->vm_pgoff != 0 ||
+ 	    (pgprot_val(vma->vm_page_prot) & _PAGE_RW) ||
+ 	    (vma->vm_flags & (VM_WRITE | VM_MAYWRITE)))
+@@ -739,13 +749,32 @@
+ 	   Comments there indicate that one should set_memory_wc()
+ 	   before the remap, but that doesn't silence the WARN_ON.
+ 	   Luckily vm_insert_page() works without complaints. */
++#ifdef CONFIG_PERFCTR_XEN
++	vma->vm_flags |= VM_PFNMAP | VM_RESERVED | VM_IO;
++#endif
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,29)
+-	return vm_insert_page(vma, vma->vm_start, virt_to_page((unsigned long)perfctr));
++	res = vm_insert_page(vma, vma->vm_start, virt_to_page((unsigned long)perfctr));
+ #else
+-	return remap_pfn_range(vma, vma->vm_start,
++	res = remap_pfn_range(vma, vma->vm_start,
+ 			       virt_to_phys(perfctr) >> PAGE_SHIFT,
+ 			       PAGE_SIZE, vma->vm_page_prot);
+ #endif
++#ifdef CONFIG_PERFCTR_XEN
++	/* The perfctr pages are right after the first one in shared_info */
++	if (!xen_feature(XENFEAT_auto_translated_physmap))
++	{
++		unsigned long i;
++		for (i = PAGE_SIZE; i < PERFCTR_KSTATE_SIZE && res >= 0; i += PAGE_SIZE)
++			res = xen_remap_domain_mfn_range(vma, vma->vm_start + i, (xen_start_info->shared_info + i) >> PAGE_SHIFT, 1, vma->vm_page_prot, DOMID_SELF);
++	}
++	else
++	{
++		unsigned long i;
++		for (i = PAGE_SIZE; i < PERFCTR_KSTATE_SIZE && res >= 0; i += PAGE_SIZE)
++			res = vm_insert_page(vma, vma->vm_start + i, virt_to_page((unsigned long)HYPERVISOR_shared_info + i));
++	}
++#endif
++       return res;
+ }
+ 
+ static int vperfctr_release(struct inode *inode, struct file *filp)
+--- perfctr-2.6.42.2/linux/drivers/perfctr/x86.c
++++ perfctr-2.6.42.2-new/linux/drivers/perfctr/x86.c
+@@ -3,7 +3,18 @@
+  *
+  * Copyright (C) 1999-2010  Mikael Pettersson
+  * Copyright (C) 2012 Ruslan Nikolaev
++ *
++ * Support for Xen/Dom
++ * Copyright (C) 2010 Ruslan Nikolaev
++ *
++ * Note: This file is also being used by performance virtualization
++ * module in Xen hypervisor for which CONFIG_PMUSTATE_VIRT macro is
++ * defined (the file is placed at xen/arch/x86/perfctr.c).
++ * The macro CONFIG_PERFCTR_XEN must be used by Linux guest perfctr
++ * package, so that it work with the virtualization module properly.
+  */
++
++#ifndef CONFIG_PMUSTATE_VIRT /* Xen */
+ #include <linux/version.h>
+ #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,19)
+ #include <linux/config.h>
+@@ -14,6 +25,7 @@
+ #include <linux/sched.h>
+ #include <linux/fs.h>
+ #include <linux/perfctr.h>
++#endif
+ 
+ #include <asm/msr.h>
+ #undef MSR_P6_PERFCTR0
+@@ -29,14 +41,20 @@
+ #include <asm/fixmap.h>
+ #include <asm/apic.h>
+ struct hw_interrupt_type;
+-#include <asm/hw_irq.h>
++#ifdef CONFIG_PMUSTATE_VIRT /* Xen */
++# include <asm/perfctr.h> /* don't move it up because perfctr_glue.h via perfctr.h must be included here. */
++# else /* for x86.c in Linux */
++# include <asm/hw_irq.h>
++#endif
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,18) && defined(CONFIG_X86_LOCAL_APIC)
+ #include <asm/nmi.h>
+ #endif
+ 
++#ifndef CONFIG_PMUSTATE_VIRT
+ #include "compat.h"
+ #include "x86_compat.h"
+ #include "x86_tests.h"
++#endif
+ 
+ /* Has been removed from kernel recently, keep it here for now */
+ #ifndef current_cpu_data
+@@ -47,6 +65,22 @@
+ # endif
+ #endif
+ 
++#ifdef CONFIG_PERFCTR_XEN /* Dom */
++# include <asm/xen/hypervisor.h>
++# include <asm/xen/hypercall.h>
++# define PERFCTROP_resume   0
++# define PERFCTROP_isuspend 1
++#endif
++
++#ifdef CONFIG_PERFCTR_WIDECTR
++static unsigned int pmc_shift = 24; /* Default PMC: 64-24=40 bits */
++# define perfctr_counter_join(eax,edx) (((unsigned long long)(eax)) | (((unsigned long long)(edx)) << 32))
++# define perfctr_pmc_extend(now)       ((now) = (((perfctr_scounter_t)(now)) << pmc_shift) >> pmc_shift)
++#else
++# define perfctr_counter_join(eax,edx) (eax)
++# define perfctr_pmc_extend(now)
++#endif
++
+ /* Support for lazy evntsel and perfctr MSR updates. */
+ struct per_cpu_cache {	/* roughly a subset of perfctr_cpu_state */
+ 	union {
+@@ -65,15 +99,22 @@
+ 	} control;
+ 	unsigned int core2_fixed_ctr_ctrl;
+ 	unsigned int nhlm_offcore_rsp[2];
++#ifdef CONFIG_PERFCTR_XEN
++	unsigned int last_cstatus;
++	unsigned int state_changed;
++#endif
+ } ____cacheline_aligned;
+ static struct per_cpu_cache per_cpu_cache[NR_CPUS] __cacheline_aligned;
+ #define __get_cpu_cache(cpu) (&per_cpu_cache[cpu])
+ #define get_cpu_cache() __get_cpu_cache(smp_processor_id())
+ 
+-/* Structure for counter snapshots, as 32-bit values. */
++static unsigned long per_cpu_cr4_prev_value[NR_CPUS] __cacheline_aligned;
++#define get_cpu_cr4_prev_value() (&per_cpu_cr4_prev_value[smp_processor_id()])
++
++/* Structure for counter snapshots. */
+ struct perfctr_low_ctrs {
+-	unsigned int tsc;
+-	unsigned int pmc[18];
++	perfctr_counter_t tsc;
++	perfctr_counter_t pmc[18];
+ };
+ 
+ /* Structures for describing the set of PMU MSRs. */
+@@ -171,27 +212,167 @@
+ #define P4_FAST_RDPMC		0x80000000
+ #define P4_MASK_FAST_RDPMC	0x0000001F	/* we only need low 5 bits */
+ 
++#ifdef CONFIG_PERFCTR_XEN
++
++static struct perfctr_cpu_state *hypervisor_perfctr;
++
++/*
++ * For Xen/Dom mode, we want to use special rdpmc, rdtsc, rdmsr, wrmsr
++ * operations in Dom operating system that virtualize counters on
++ * per-VCPU basis.
++ *
++ * Xen/Dom mode also normally requires CONFIG_PERFCTR_WIDECTR to be
++ * enabled.
++ */
++
++static perfctr_counter_t _rdtsc_pfc(void)
++{
++	struct perfctr_cpu_state* cpu_state;
++	unsigned long long sum;
++	perfctr_counter_t tsc0, tsc1, now;
++	unsigned int eax, edx;
++
++	cpu_state = &hypervisor_perfctr[smp_processor_id()];
++	if (likely(cpu_state->cstatus != 0)) {
++		tsc0 = perfctr_get_ctrvar(cpu_state->tsc_start);
++	retry:
++		__asm__ __volatile__("rdtsc" : "=a"(eax), "=d" (edx));
++		now = perfctr_counter_join(eax, edx);
++		sum = cpu_state->tsc_sum;
++		cpu_state = &hypervisor_perfctr[smp_processor_id()];
++		tsc1 = perfctr_get_ctrvar(cpu_state->tsc_start);
++		if (likely(tsc1 == tsc0))
++			return sum += (now - tsc0);
++		tsc0 = tsc1;
++		goto retry; /* better gcc code than with a do{}while() loop */
++	}
++	return cpu_state->tsc_sum;
++}
++
++static perfctr_counter_t _rdpmc_pfc(unsigned int idx, unsigned int ctr)
++{
++	struct perfctr_cpu_state* cpu_state;
++	unsigned long long sum;
++	perfctr_counter_t start, now;
++	perfctr_counter_t tsc0, tsc1;
++	unsigned int eax, edx;
++
++	cpu_state = &hypervisor_perfctr[smp_processor_id()];
++	if (likely(cpu_state->cstatus != 0)) {
++		tsc0 = perfctr_get_ctrvar(cpu_state->tsc_start);
++	retry:
++		__asm__ __volatile__("rdpmc" : "=a"(eax), "=d" (edx) : "c" (ctr));
++		now = perfctr_counter_join(eax, edx);
++		perfctr_pmc_extend(now);
++		start = cpu_state->pmc[idx].start;
++		sum = cpu_state->pmc[idx].sum;
++		cpu_state = &hypervisor_perfctr[smp_processor_id()];
++		tsc1 = perfctr_get_ctrvar(cpu_state->tsc_start);
++		if (likely(tsc0 == tsc1))
++			return sum += (now - start);
++		tsc0 = tsc1;
++		goto retry;
++	}
++	return 0;
++}
++
++static void perfctr_update_ictr(unsigned int idx, unsigned int ctr, struct perfctr_cpu_state *state)
++{
++	struct perfctr_cpu_state* cpu_state;
++	perfctr_counter_t tsc0, tsc1;
++
++	cpu_state = &hypervisor_perfctr[smp_processor_id()];
++	if (likely(cpu_state->cstatus != 0)) {
++		tsc0 = perfctr_get_ctrvar(cpu_state->tsc_start);
++	retry:
++		state->pmc[idx].start = cpu_state->pmc[idx].start;
++		state->pmc[idx].sum = cpu_state->pmc[idx].sum;
++		cpu_state = &hypervisor_perfctr[smp_processor_id()];
++		tsc1 = perfctr_get_ctrvar(cpu_state->tsc_start);
++		if (likely(tsc0 == tsc1))
++			return;
++		tsc0 = tsc1;
++		goto retry;
++	}
++}
++
++/* Paravirtualized version of rdtsc and rdpmc. */
++# define rdtsc_pfc(val) (val = _rdtsc_pfc())
++# define rdpmc_pfc(ctr,val,i) (val = _rdpmc_pfc(i,ctr))
++
++/* Fake rdmsr and wrmsr for paravirtualized mode. */
++#define rdmsr_pfc(ctr,low,high) /* Return some standard features. */ \
++	do { (low) = MSR_IA32_MISC_ENABLE_PERF_AVAIL; (high) = 0; } while (0)
++#define wrmsr_pfc(ctr,low,high) /* Ignore. */
++#define wrmsr_pfs(ctr,low,high,cache) /* Indicate that state has changed. */ \
++	do { (cache)->state_changed = 1; } while (0)
++#define rdmsr_low(msr,low) /* Return some standard features. */ \
++	do { (low) = MSR_IA32_MISC_ENABLE_PERF_AVAIL; } while (0)
++
++#else
++
++static inline perfctr_counter_t _rdtsc_pfc(void)
++{
++	unsigned int eax, edx;
++	__asm__ __volatile__("rdtsc" : "=a"(eax), "=d" (edx));
++	return perfctr_counter_join(eax, edx);
++}
++
++static inline perfctr_counter_t _rdpmc_pfc(unsigned int ctr)
++{
++	perfctr_counter_t now;
++	unsigned int eax, edx;
++	__asm__ __volatile__("rdpmc" : "=a"(eax), "=d" (edx) : "c" (ctr));
++	now = perfctr_counter_join(eax, edx);
++	perfctr_pmc_extend(now);
++	return now;
++}
++
++/* Ordinary versions of rdtsc, rdpmc, rdmsr and wrmsr */
++# define rdtsc_pfc(val) (val = _rdtsc_pfc())
++# define rdpmc_pfc(ctr,val,i) (val = _rdpmc_pfc(ctr))
++# define rdmsr_pfc(ctr,low,high) rdmsr(ctr,low,high)
++# define wrmsr_pfc(ctr,low,high) wrmsr(ctr,low,high)
++# define wrmsr_pfs(ctr,low,high,cache) wrmsr(ctr,low,high)
++
++static void perfctr_update_ictr(unsigned int idx, unsigned int ctr, struct perfctr_cpu_state *state)
++{
++	perfctr_counter_t now;
++	rdpmc_pfc(ctr, now, idx);
++	state->pmc[idx].sum += now - state->pmc[idx].start;
++	state->pmc[idx].start = now;
++}
++
+ #define rdmsr_low(msr,low) \
+ 	__asm__ __volatile__("rdmsr" : "=a"(low) : "c"(msr) : "edx")
+-#define rdpmc_low(ctr,low) \
+-	__asm__ __volatile__("rdpmc" : "=a"(low) : "c"(ctr) : "edx")
+ 
++#endif
++
+ static void clear_msr_range(unsigned int base, unsigned int n)
+ {
+ 	unsigned int i;
+ 
+ 	for(i = 0; i < n; ++i)
+-		wrmsr(base+i, 0, 0);
++		wrmsr_pfc(base+i, 0, 0);
+ }
+ 
+-static inline void set_in_cr4_local(unsigned int mask)
++static inline void set_in_cr4_local(unsigned long mask)
+ {
+-	write_cr4(read_cr4() | mask);
++	unsigned long prev = read_cr4();
++
++	/* Do not write unnecessarily to avoid Xen warnings */
++	*get_cpu_cr4_prev_value() = prev;
++	if ((prev & mask) != mask)
++		write_cr4(prev | mask);
+ }
+ 
+-static inline void clear_in_cr4_local(unsigned int mask)
++static inline void clear_in_cr4_local(unsigned long mask)
+ {
+-	write_cr4(read_cr4() & ~mask);
++	unsigned long prev = *get_cpu_cr4_prev_value();
++
++	/* Write only if the bit was initially changed by set_in_cr4_local() */
++	if ((prev & mask) != mask)
++		write_cr4(read_cr4() & ~mask);
+ }
+ 
+ static unsigned int new_id(void)
+@@ -218,6 +399,11 @@
+ 	__perfctr_cpu_unmask_interrupts();
+ }
+ 
++#ifdef CONFIG_PERFCTR_XEN
++#undef cpu_has_apic
++#define cpu_has_apic 1
++#endif
++
+ #else	/* CONFIG_X86_LOCAL_APIC */
+ #define perfctr_cstatus_has_ictrs(cstatus)	0
+ #undef cpu_has_apic
+@@ -319,10 +505,12 @@
+ 	cache = get_cpu_cache();
+ 	if (cache->k1.p5_cesr != cesr) {
+ 		cache->k1.p5_cesr = cesr;
+-		wrmsr(MSR_P5_CESR, cesr, 0);
++		wrmsr_pfs(MSR_P5_CESR, cesr, 0, cache);
+ 	}
+ }
+ 
++/* No support for pre-MMX Pentiums, as they don't have rdpmc. */
++#if (!defined(CONFIG_PERFCTR_XEN) && !defined(CONFIG_PMUSTATE_VIRT))
+ static void p5_read_counters(const struct perfctr_cpu_state *state,
+ 			     struct perfctr_low_ctrs *ctrs)
+ {
+@@ -335,13 +523,14 @@
+ 
+ 	cstatus = state->cstatus;
+ 	if (perfctr_cstatus_has_tsc(cstatus))
+-		rdtscl(ctrs->tsc);
++		rdtsc_pfc(ctrs->tsc);
+ 	nrctrs = perfctr_cstatus_nractrs(cstatus);
+ 	for(i = 0; i < nrctrs; ++i) {
+ 		unsigned int pmc = state->pmc[i].map;
+ 		rdmsr_low(MSR_P5_CTR0+pmc, ctrs->pmc[i]);
+ 	}
+ }
++#endif
+ 
+ /* used by all except pre-MMX P5 */
+ static void rdpmc_read_counters(const struct perfctr_cpu_state *state,
+@@ -351,11 +540,11 @@
+ 
+ 	cstatus = state->cstatus;
+ 	if (perfctr_cstatus_has_tsc(cstatus))
+-		rdtscl(ctrs->tsc);
++		rdtsc_pfc(ctrs->tsc);
+ 	nrctrs = perfctr_cstatus_nractrs(cstatus);
+ 	for(i = 0; i < nrctrs; ++i) {
+ 		unsigned int pmc = state->pmc[i].map;
+-		rdpmc_low(pmc, ctrs->pmc[i]);
++		rdpmc_pfc(pmc, ctrs->pmc[i], i);
+ 	}
+ }
+ 
+@@ -423,7 +612,7 @@
+ 	cesr = state->k1.id;
+ 	if (cache->k1.p5_cesr != cesr) {
+ 		cache->k1.p5_cesr = cesr;
+-		wrmsr(MSR_P5_CESR, cesr, 0);
++		wrmsr_pfs(MSR_P5_CESR, cesr, 0, cache);
+ 	}
+ }
+ #endif	/* !CONFIG_X86_TSC */
+@@ -596,10 +785,10 @@
+ 	nrctrs = perfctr_cstatus_nrctrs(cstatus);
+ 	if (state->core2_fixed_ctr_ctrl & MSR_CORE_PERF_FIXED_CTR_CTRL_PMIANY) {
+ 		cache->core2_fixed_ctr_ctrl = 0;
+-		wrmsr(MSR_CORE_PERF_FIXED_CTR_CTRL, 0, 0);
++		wrmsr_pfs(MSR_CORE_PERF_FIXED_CTR_CTRL, 0, 0, cache);
+ 	}
+ 	for(i = perfctr_cstatus_nractrs(cstatus); i < nrctrs; ++i) {
+-		unsigned int pmc_raw, pmc_idx, now;
++		unsigned int pmc_raw, pmc_idx;
+ 		pmc_raw = state->pmc[i].map;
+ 		if (!(pmc_raw & CORE2_PMC_FIXED_FLAG)) {
+ 			/* Note: P4_MASK_FAST_RDPMC is a no-op for P6 and K7.
+@@ -608,13 +797,11 @@
+ 			cache->control.evntsel[pmc_idx] = 0;
+ 			cache->control.evntsel_high[pmc_idx] = 0;
+ 			/* On P4 this intensionally also clears the CCCR.OVF flag. */
+-			wrmsr(msr_evntsel0+pmc_idx, 0, 0);
++			wrmsr_pfs(msr_evntsel0+pmc_idx, 0, 0, cache);
+ 		}
+ 		/* P4 erratum N17 does not apply since we read only low 32 bits. */
+-		rdpmc_low(pmc_raw, now);
+-		state->pmc[i].sum += now - state->pmc[i].start;
+-		state->pmc[i].start = now;
+-		if ((int)now >= 0)
++		perfctr_update_ictr(i, pmc_raw, state);
++		if ((perfctr_scounter_t)state->pmc[i].start >= 0)
+ 			++pending;
+ 	}
+ 	state->pending_interrupt = pending;
+@@ -646,7 +833,7 @@
+ 	if ((state->core2_fixed_ctr_ctrl & MSR_CORE_PERF_FIXED_CTR_CTRL_PMIANY) &&
+ 	    cache->core2_fixed_ctr_ctrl != 0) {
+ 		cache->core2_fixed_ctr_ctrl = 0;
+-		wrmsr(MSR_CORE_PERF_FIXED_CTR_CTRL, 0, 0);
++		wrmsr_pfs(MSR_CORE_PERF_FIXED_CTR_CTRL, 0, 0, cache);
+ 	}
+ 	for(i = perfctr_cstatus_nractrs(cstatus); i < nrctrs; ++i) {
+ 		unsigned int pmc_raw = state->pmc[i].map;
+@@ -670,13 +857,13 @@
+ 			if (cache->control.evntsel[pmc_idx]) {
+ 				cache->control.evntsel[pmc_idx] = 0;
+ 				cache->control.evntsel_high[pmc_idx] = 0;
+-				wrmsr(msr_evntsel0+pmc_idx, 0, 0);
++				wrmsr_pfs(msr_evntsel0+pmc_idx, 0, 0, cache);
+ 			}
+ 			msr_perfctr = msr_perfctr0 + pmc_idx;
+ 			pmc_value_hi = -1;
+ 		}
+ 		/* P4 erratum N15 does not apply since the CCCR is disabled. */
+-		wrmsr(msr_perfctr, state->pmc[i].start, pmc_value_hi);
++		wrmsr_pfs(msr_perfctr, state->pmc[i].start, pmc_value_hi, cache);
+ 	}
+ 	/* cache->k1.id remains != state->k1.id */
+ }
+@@ -715,13 +902,13 @@
+ 		    evntsel_high != cache->control.evntsel_high[pmc]) {
+ 			cache->control.evntsel[pmc] = evntsel;
+ 			cache->control.evntsel_high[pmc] = evntsel_high;
+-			wrmsr(msr_evntsel0+pmc, evntsel, evntsel_high);
++			wrmsr_pfs(msr_evntsel0+pmc, evntsel, evntsel_high, cache);
+ 		}
+ 	}
+ 	if (state->core2_fixed_ctr_ctrl != 0 &&
+ 	    state->core2_fixed_ctr_ctrl != cache->core2_fixed_ctr_ctrl) {
+ 		cache->core2_fixed_ctr_ctrl = state->core2_fixed_ctr_ctrl;
+-		wrmsr(MSR_CORE_PERF_FIXED_CTR_CTRL, state->core2_fixed_ctr_ctrl, 0);
++		wrmsr_pfs(MSR_CORE_PERF_FIXED_CTR_CTRL, state->core2_fixed_ctr_ctrl, 0, cache);
+ 	}
+ 	for (i = 0; i < 2; ++i) {
+ 		unsigned int offcore_rsp;
+@@ -729,7 +916,7 @@
+ 		offcore_rsp = state->control.nhlm.offcore_rsp[i];
+ 		if (offcore_rsp != cache->nhlm_offcore_rsp[i]) {
+ 			cache->nhlm_offcore_rsp[i] = offcore_rsp;
+-			wrmsr(MSR_OFFCORE_RSP0+i, offcore_rsp, 0);
++			wrmsr_pfs(MSR_OFFCORE_RSP0+i, offcore_rsp, 0, cache);
+ 		}
+ 	}
+ 	cache->k1.id = state->k1.id;
+@@ -767,10 +954,10 @@
+ {
+ 	if (init) {
+ 		unsigned int low, high;
+-		rdmsr(MSR_IA32_DEBUGCTLMSR, low, high);
++		rdmsr_pfc(MSR_IA32_DEBUGCTLMSR, low, high);
+ 		low &= ~MSR_IA32_DEBUGCTLMSR_FREEZE_PERFMON_ON_PMI;
+-		wrmsr(MSR_IA32_DEBUGCTLMSR, low, high);
+-		wrmsr(MSR_CORE_PERF_GLOBAL_CTRL, (1 << p6_nr_pmcs) - 1, (1 << p6_nr_ffcs) - 1);
++		wrmsr_pfc(MSR_IA32_DEBUGCTLMSR, low, high);
++		wrmsr_pfc(MSR_CORE_PERF_GLOBAL_CTRL, (1 << p6_nr_pmcs) - 1, (1 << p6_nr_ffcs) - 1);
+ 	}
+ }
+ 
+@@ -870,7 +1057,7 @@
+ static void vc3_clear_counters(int init)
+ {
+ 	/* Not documented, but seems to be default after boot. */
+-	wrmsr(MSR_P6_EVNTSEL0+1, 0x00070079, 0);
++	wrmsr_pfc(MSR_P6_EVNTSEL0+1, 0x00070079, 0);
+ }
+ 
+ static const struct perfctr_pmu_msrs vc3_pmu_msrs = {
+@@ -1031,7 +1218,7 @@
+ 			return -EINVAL;
+ 		/* XXX: Two counters could map to the same ESCR. Should we
+ 		   check that they use the same ESCR value? */
+-		state->p4_escr_map[i] = escr_addr - MSR_P4_ESCR0;
++		P4_ESCR_MAP(state, i) = escr_addr - MSR_P4_ESCR0;
+ 	}
+ 	/* check ReplayTagging control (PEBS_ENABLE and PEBS_MATRIX_VERT) */
+ 	if (state->control.p4.pebs_enable) {
+@@ -1088,25 +1275,25 @@
+ 	for(i = 0; i < nrctrs; ++i) {
+ 		unsigned int escr_val, escr_off, cccr_val, pmc;
+ 		escr_val = state->control.p4.escr[i];
+-		escr_off = state->p4_escr_map[i];
++		escr_off = P4_ESCR_MAP(state, i);
+ 		if (escr_val != cache->control.escr[escr_off]) {
+ 			cache->control.escr[escr_off] = escr_val;
+-			wrmsr(MSR_P4_ESCR0+escr_off, escr_val, 0);
++			wrmsr_pfs(MSR_P4_ESCR0+escr_off, escr_val, 0, cache);
+ 		}
+ 		cccr_val = state->control.evntsel[i];
+ 		pmc = state->pmc[i].map & P4_MASK_FAST_RDPMC;
+ 		if (cccr_val != cache->control.evntsel[pmc]) {
+ 			cache->control.evntsel[pmc] = cccr_val;
+-			wrmsr(MSR_P4_CCCR0+pmc, cccr_val, 0);
++			wrmsr_pfs(MSR_P4_CCCR0+pmc, cccr_val, 0, cache);
+ 		}
+ 	}
+ 	if (state->control.p4.pebs_enable != cache->control.pebs_enable) {
+ 		cache->control.pebs_enable = state->control.p4.pebs_enable;
+-		wrmsr(MSR_P4_PEBS_ENABLE, state->control.p4.pebs_enable, 0);
++		wrmsr_pfs(MSR_P4_PEBS_ENABLE, state->control.p4.pebs_enable, 0, cache);
+ 	}
+ 	if (state->control.p4.pebs_matrix_vert != cache->control.pebs_matrix_vert) {
+ 		cache->control.pebs_matrix_vert = state->control.p4.pebs_matrix_vert;
+-		wrmsr(MSR_P4_PEBS_MATRIX_VERT, state->control.p4.pebs_matrix_vert, 0);
++		wrmsr_pfs(MSR_P4_PEBS_MATRIX_VERT, state->control.p4.pebs_matrix_vert, 0, cache);
+ 	}
+ 	cache->k1.id = state->k1.id;
+ }
+@@ -1249,7 +1436,7 @@
+ 
+ 	state->pending_interrupt = 0;
+ 	for(pmc_mask = 0; pmc < nrctrs; ++pmc) {
+-		if ((int)state->pmc[pmc].start >= 0) { /* XXX: ">" ? */
++		if ((perfctr_scounter_t)state->pmc[pmc].start >= 0) { /* XXX: ">" ? */
+ 			/* XXX: "+=" to correct for overshots */
+ 			state->pmc[pmc].start = state->control.ireset[pmc];
+ 			pmc_mask |= (1 << pmc);
+@@ -1259,8 +1446,10 @@
+ 			   in order to stop the i-mode counters. */
+ 		}
+ 	}
++#ifndef CONFIG_PERFCTR_XEN
+ 	if (lvtpc_reinit_needed)
+ 		apic_write(APIC_LVTPC, LOCAL_PERFCTR_VECTOR);
++#endif
+ 	return pmc_mask;
+ }
+ 
+@@ -1339,7 +1528,12 @@
+ 	struct perfctr_low_ctrs now;
+ 
+ 	if (perfctr_cstatus_has_ictrs(state->cstatus))
+-	    perfctr_cpu_isuspend(state);
++        {
++#ifdef CONFIG_PERFCTR_XEN
++		HYPERVISOR_perfctr_op(PERFCTROP_isuspend, NULL);
++#endif
++		perfctr_cpu_isuspend(state);
++        }
+ 	perfctr_cpu_read_counters(state, &now);
+ 	cstatus = state->cstatus;
+ 	if (perfctr_cstatus_has_tsc(cstatus))
+@@ -1352,10 +1546,25 @@
+ 
+ void perfctr_cpu_resume(struct perfctr_cpu_state *state)
+ {
++#ifdef CONFIG_PERFCTR_XEN
++	struct per_cpu_cache *cache = get_cpu_cache();
++	state->smp_id = smp_processor_id();
++	cache->state_changed = unlikely(cache->last_cstatus != state->cstatus);
++#endif
+ 	if (perfctr_cstatus_has_ictrs(state->cstatus))
+-	    perfctr_cpu_iresume(state);
++	{
++#ifdef CONFIG_PERFCTR_XEN
++		cache->state_changed = 1; /* we need a hypercall for ictrs */
++#endif
++		perfctr_cpu_iresume(state);
++	}
+ 	/* perfctr_cpu_enable_rdpmc(); */	/* not for x86 or global-mode */
+ 	perfctr_cpu_write_control(state);
++#ifdef CONFIG_PERFCTR_XEN
++	if (cache->state_changed)
++		HYPERVISOR_perfctr_op(PERFCTROP_resume, state);
++	cache->last_cstatus = state->cstatus; /* keep current state */
++#endif
+ 	//perfctr_cpu_read_counters(state, &state->start);
+ 	{
+ 		struct perfctr_low_ctrs now;
+@@ -1363,10 +1572,19 @@
+ 		perfctr_cpu_read_counters(state, &now);
+ 		cstatus = state->cstatus;
+ 		if (perfctr_cstatus_has_tsc(cstatus))
+-			state->tsc_start = now.tsc;
++			/* TSC start must be updated atomically */
++			perfctr_set_ctrvar(state->tsc_start, now.tsc);
+ 		nrctrs = perfctr_cstatus_nractrs(cstatus);
+ 		for(i = 0; i < nrctrs; ++i)
+ 			state->pmc[i].start = now.pmc[i];
++#ifdef CONFIG_PERFCTR_XEN
++		i = nrctrs;
++		nrctrs = perfctr_cstatus_nrctrs(cstatus);
++		for(; i < nrctrs; ++i) {
++			state->pmc[i].start = 0;
++			state->pmc[i].sum = 0;
++		}
++#endif
+ 	}
+ 	/* XXX: if (SMP && start.tsc == now.tsc) ++now.tsc; */
+ }
+@@ -1380,7 +1598,8 @@
+ 	cstatus = state->cstatus;
+ 	if (perfctr_cstatus_has_tsc(cstatus)) {
+ 		state->tsc_sum += now.tsc - state->tsc_start;
+-		state->tsc_start = now.tsc;
++		/* TSC start must be updated atomically */
++		perfctr_set_ctrvar(state->tsc_start, now.tsc);
+ 	}
+ 	nractrs = perfctr_cstatus_nractrs(cstatus);
+ 	for(i = 0; i < nractrs; ++i) {
+@@ -1508,10 +1727,10 @@
+ 	/* Ensure that CPUID reports all levels. */
+ 	if (cpu_data(cpu).x86_model == 3) { /* >= 3? */
+ 		unsigned int low, high;
+-		rdmsr(MSR_IA32_MISC_ENABLE, low, high);
++		rdmsr_pfc(MSR_IA32_MISC_ENABLE, low, high);
+ 		if (low & (1<<22)) { /* LIMIT_CPUID_MAXVAL */
+ 			low &= ~(1<<22);
+-			wrmsr(MSR_IA32_MISC_ENABLE, low, high);
++			wrmsr_pfc(MSR_IA32_MISC_ENABLE, low, high);
+ 			printk(KERN_INFO "perfctr/x86.c: CPU %d: removed CPUID level limitation\n",
+ 			       cpu);
+ 		}
+@@ -1607,6 +1826,9 @@
+ 	static char p4_name[] __initdata = "Intel P4";
+ 	unsigned int misc_enable;
+ 
++#ifdef CONFIG_PERFCTR_WIDECTR
++	pmc_shift = 32; /* 64-32=32 bits */
++#endif
+ 	/* Detect things that matter to the driver. */
+ 	rdmsr_low(MSR_IA32_MISC_ENABLE, misc_enable);
+ 	if (!(misc_enable & MSR_IA32_MISC_ENABLE_PERF_AVAIL))
+@@ -1663,8 +1885,13 @@
+ 		      ((cpuid_eax(1) >> 12) & 0x3) == 1)))
+ 			perfctr_info.cpu_features &= ~PERFCTR_FEATURE_RDPMC;
+ 	} else {
++#if (!defined(CONFIG_PERFCTR_XEN) && !defined(CONFIG_PMUSTATE_VIRT)) 
+ 		perfctr_info.cpu_features &= ~PERFCTR_FEATURE_RDPMC;
+ 		read_counters = p5_read_counters;
++#else
++		/* Not available for Xen because of lack of rdpmc. */
++		return -ENODEV;
++#endif
+ 	}
+ 	/* Detect and set up legacy cpu_type for user-space. */
+ 	if (cpu_has_mmx) {
+@@ -1690,6 +1917,19 @@
+ 	static char snb_name[] __initdata = "Intel Sandy Bridge";
+ 	unsigned int misc_enable;
+ 
++#ifdef CONFIG_PERFCTR_WIDECTR
++	switch (current_cpu_data.x86_model) {
++	case 26:	/* Nehalem: Core i7-900, Xeon 5500, Xeon 3500 */
++	case 30:	/* Nehalem: Core i7-800/i5-700, i7-900XM/i7-800M/i7-700M, Xeon 3400 */
++	case 37:	/* Westmere: Core i5-600/i3-500/Pentium-G6950, i7-600M/i5-500M/i5-400M/i3-300M, Xeno L3406 */
++	case 44:	/* Westmere: Core i7-980X (Gulftown), Xeon 5600, Xeon 3600 */
++	case 46:	/* Nehalem: Xeon 7500 */
++	case 42:	/* Sandy Bridge */
++		pmc_shift = 16; /* 64-16=48 bits for Nehalem+ CPUs */
++		break;
++	}
++#endif
++
+ 	/*
+ 	 * Post P4 family 6 models (Pentium M, Core, Core 2, Atom)
+ 	 * have MISC_ENABLE.PERF_AVAIL like the P4.
+@@ -2012,6 +2252,9 @@
+ 
+ 	if (!cpu_has_tsc)
+ 		return -ENODEV;
++#ifdef CONFIG_PERFCTR_WIDECTR
++	pmc_shift = 16; /* 64-16=48 bits */
++#endif
+ 	switch (current_cpu_data.x86) {
+ 	case 6: /* K7 */
+ 		perfctr_info.cpu_type = PERFCTR_X86_AMD_K7;
+@@ -2057,6 +2300,9 @@
+ 	static char mii_name[] __initdata = "Cyrix 6x86MX/MII/III";
+ 	if (!cpu_has_tsc)
+ 		return -ENODEV;
++#ifdef CONFIG_PERFCTR_WIDECTR
++	pmc_shift = 16; /* 64-16=48 bits */
++#endif
+ 	switch (current_cpu_data.x86) {
+ 	case 6:	/* 6x86MX, MII, or III */
+ 		perfctr_info.cpu_type = PERFCTR_X86_CYRIX_MII;
+@@ -2180,8 +2426,10 @@
+ 	   this is in IRQ context with preemption disabled. */
+ 	perfctr_cpu_clear_counters(1);
+ 	perfctr_cpu_invalidate_cache();
++#ifndef CONFIG_PERFCTR_XEN
+ 	if (cpu_has_apic)
+ 		apic_write(APIC_LVTPC, LOCAL_PERFCTR_VECTOR);
++#endif
+ 	if (perfctr_info.cpu_features & PERFCTR_FEATURE_RDPMC)
+ 		set_in_cr4_local(X86_CR4_PCE);
+ }
+@@ -2192,8 +2440,10 @@
+ 	   this is in IRQ context with preemption disabled. */
+ 	perfctr_cpu_clear_counters(0);
+ 	perfctr_cpu_invalidate_cache();
++#ifndef CONFIG_PERFCTR_XEN
+ 	if (cpu_has_apic)
+ 		apic_write(APIC_LVTPC, APIC_DM_NMI | APIC_LVT_MASKED);
++#endif
+ 	if (perfctr_info.cpu_features & PERFCTR_FEATURE_RDPMC)
+ 		clear_in_cr4_local(X86_CR4_PCE);
+ }
+@@ -2301,7 +2551,7 @@
+ 
+ #ifdef CONFIG_X86_LOCAL_APIC
+ 
+-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,6)
++#if defined(CONFIG_PMUSTATE_VIRT) || (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,6))
+ static int perfctr_reserve_lapic_nmi(void)
+ {
+ 	int ret = 0;
+@@ -2316,7 +2566,7 @@
+ static inline void perfctr_release_lapic_nmi(void) { }
+ #endif
+ 
+-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,19)
++#if !defined(CONFIG_PMUSTATE_VIRT) && (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,19))
+ 
+ static void perfctr_release_perfctr_range(unsigned int first_msr, unsigned int nr_msrs)
+ {
+@@ -2494,6 +2744,10 @@
+ 	int err = -ENODEV;
+ 
+ 	preempt_disable();
++
++#ifdef CONFIG_PERFCTR_XEN
++	hypervisor_perfctr = (struct perfctr_cpu_state *)((char *)HYPERVISOR_shared_info + PAGE_SIZE);
++#endif
+ 
+ 	/* RDPMC and RDTSC are on by default. They will be disabled
+ 	   by the init procedures if necessary. */
+--- perfctr-2.6.42.2/linux/drivers/perfctr/x86_setup.c
++++ perfctr-2.6.42.2-new/linux/drivers/perfctr/x86_setup.c
+@@ -20,8 +20,14 @@
+ #include "x86_compat.h"
+ #include "compat.h"
+ 
++#ifdef CONFIG_PERFCTR_XEN
++# include <xen/interface/xen.h>
++# include <xen/events.h>
++# include "virq.h"
++#endif
++
+ #ifdef CONFIG_X86_LOCAL_APIC
+-static void perfctr_default_ihandler(unsigned long pc)
++static void perfctr_default_ihandler(void)
+ {
+ }
+ 
+@@ -38,8 +44,60 @@
+ 	interrupts_masked[smp_processor_id()] = 0;
+ }
+ 
++#ifdef CONFIG_PERFCTR_XEN
++static int xen_perfctr_irq[NR_CPUS];
++
++/* VIRQ handler for Xen version */
++static irqreturn_t xen_perfctr_interrupt(int irq, void *dev_id)
++{
++	if (!interrupts_masked[smp_processor_id()])
++		(*perfctr_ihandler)();
++	return IRQ_HANDLED;
++}
++
++/* VIRQ unbinding for Xen version */
++void xen_perfctr_virq_unbind(void)
++{
++    int i;
++
++    for_each_online_cpu(i) {
++        if (xen_perfctr_irq[i] >= 0) {
++            unbind_from_irqhandler(xen_perfctr_irq[i], NULL);
++            xen_perfctr_irq[i] = -1;
++        }
++    }
++}
++
++/* VIRQ binding for Xen version */
++int xen_perfctr_virq_bind(void)
++{
++    int irq, i;
++
++    for (i = 0; i < NR_CPUS; i++)
++        xen_perfctr_irq[i] = -1;
++
++    for_each_online_cpu(i) {
++        irq = bind_virq_to_irqhandler(VIRQ_PERFCTR, i, xen_perfctr_interrupt,
++            IRQF_DISABLED|IRQF_PERCPU|IRQF_NOBALANCING, "perfctr_irq", NULL);
++
++        if (irq < 0) {
++            xen_perfctr_virq_unbind();
++            return irq;
++        }
++
++        xen_perfctr_irq[i] = irq;
++    }
++    return 0;
++}
++
++/* keep a stub for now */
+ asmlinkage void smp_perfctr_interrupt(struct pt_regs *regs)
+ {
++	ack_APIC_irq();
++}
++#else
++asmlinkage void smp_perfctr_interrupt(struct pt_regs *regs)
++{
+ 	/* PREEMPT note: invoked via an interrupt gate, which
+ 	   masks interrupts. We're still on the originating CPU. */
+ 	/* XXX: recursive interrupts? delay the ACK, mask LVTPC, or queue? */
+@@ -47,9 +105,10 @@
+ 	if (interrupts_masked[smp_processor_id()])
+ 		return;
+ 	irq_enter();
+-	(*perfctr_ihandler)(instruction_pointer(regs));
++	(*perfctr_ihandler)();
+ 	irq_exit();
+ }
++#endif
+ 
+ void perfctr_cpu_set_ihandler(perfctr_ihandler_t ihandler)
+ {
+@@ -92,6 +151,11 @@
+ EXPORT_SYMBOL(__perfctr_cpu_mask_interrupts);
+ EXPORT_SYMBOL(__perfctr_cpu_unmask_interrupts);
+ EXPORT_SYMBOL(perfctr_cpu_set_ihandler);
++
++#ifdef CONFIG_PERFCTR_XEN
++EXPORT_SYMBOL(xen_perfctr_virq_bind);
++EXPORT_SYMBOL(xen_perfctr_virq_unbind);
++#endif
+ #endif /* CONFIG_X86_LOCAL_APIC */
+ 
+ #endif /* MODULE */
+--- perfctr-2.6.42.2/linux/include/linux/perfctr.h
++++ perfctr-2.6.42.2-new/linux/include/linux/perfctr.h
+@@ -40,7 +40,15 @@
+ 
+ /* user's view of mmap:ed virtual perfctr */
+ struct vperfctr_state {
++#ifdef CONFIG_PERFCTR_XEN
++	union {
++#endif
+ 	struct perfctr_cpu_state cpu_state;
++#ifdef CONFIG_PERFCTR_XEN
++	char pad[PERFCTR_CPU_STATE_SIZE];
++	};
++	struct perfctr_cpu_state hypervisor_perfctr[32]; /* XXX: change this if max number of VCPUs changes */
++#endif
+ };
+ 
+ /* parameter in VPERFCTR_CONTROL command */
+--- perfctr-2.6.42.2/usr.lib/Makefile
++++ perfctr-2.6.42.2-new/usr.lib/Makefile
+@@ -3,7 +3,7 @@
+ SHELL=/bin/sh
+ ARCH := $(shell uname -m | sed -e s/i.86/i386/ -e s/sun4u/sparc64/ -e s/arm.*/arm/ -e s/sa110/arm/)
+ CC=gcc
+-CFLAGS=-O2 -fomit-frame-pointer -Wall
++CFLAGS=-O2 -fomit-frame-pointer -Wall -DCONFIG_PERFCTR_XEN
+ BUILD_INCLDIR=../linux/include
+ CPPFLAGS=-I$(BUILD_INCLDIR)
+ LD=ld
+--- perfctr-2.6.42.2/usr.lib/arm.h
++++ perfctr-2.6.42.2-new/usr.lib/arm.h
+@@ -9,5 +9,6 @@
+ #define PAGE_SIZE	4096
+ 
+ #define perfctr_info_cpu_init(info)	do{}while(0)
++#define perfctr_open_init(info)		do{}while(0)
+ 
+ #endif /* __LIB_PERFCTR_ARM_H */
+--- perfctr-2.6.42.2/usr.lib/global.c
++++ perfctr-2.6.42.2-new/usr.lib/global.c
+@@ -10,6 +10,7 @@
+ #include <fcntl.h>
+ #include "libperfctr.h"
+ #include "marshal.h"
++#include "arch.h"
+ 
+ struct gperfctr {	/* XXX: kill this struct */
+     int fd;
+@@ -24,7 +25,18 @@
+ 	gperfctr->fd = open("/dev/perfctr", O_RDONLY);
+ 	if( gperfctr->fd >= 0 ) {
+ 	    if( perfctr_abi_check_fd(gperfctr->fd) >= 0 )
+-		return gperfctr;
++            {
++		/* We need to obtain perfctr_info for perfctr_open_init(). */
++#if (defined(CONFIG_PERFCTR_WIDECTR) && (defined(__i386__) || defined(__x86_64__)))
++		struct perfctr_info info;
++		if ( perfctr_info(gperfctr->fd, &info) >= 0 ) {
++		    perfctr_open_init(&info);
++#else
++		{
++#endif
++		    return gperfctr;
++		}
++	    }
+ 	    close(gperfctr->fd);
+ 	}
+ 	free(gperfctr);
+--- perfctr-2.6.42.2/usr.lib/ppc.h
++++ perfctr-2.6.42.2-new/usr.lib/ppc.h
+@@ -56,4 +56,6 @@
+ 
+ extern void perfctr_info_cpu_init(struct perfctr_info*);
+ 
++#define perfctr_open_init(info)         do{}while(0)
++
+ #endif /* __LIB_PERFCTR_PPC_H */
+--- perfctr-2.6.42.2/usr.lib/virtual.c
++++ perfctr-2.6.42.2-new/usr.lib/virtual.c
+@@ -2,6 +2,9 @@
+  * Library interface to virtual per-process performance counters.
+  *
+  * Copyright (C) 1999-2009  Mikael Pettersson
++ *
++ * Support for Xen/Dom
++ * Copyright (C) 2010 Ruslan Nikolaev
+  */
+ 
+ #include <stdio.h>
+@@ -18,6 +21,13 @@
+ 
+ #define ARRAY_SIZE(x)	(sizeof(x) / sizeof((x)[0]))
+ 
++/* We have shared_info for paravirtualized mode */
++#ifdef CONFIG_PERFCTR_XEN
++# define PERFCTR_KSTATE_SIZE (PAGE_SIZE + 7 * PAGE_SIZE)
++#else
++# define PERFCTR_KSTATE_SIZE PAGE_SIZE
++#endif
++
+ /*
+  * Code to open (with or without creation) per-process perfctrs,
+  * using the ioctl(dev_perfctr_fd, VPERFCTR_{CREAT,OPEN}, pid) API.
+@@ -96,12 +106,13 @@
+ 	goto out_fd;
+     if (perfctr_info(perfctr->fd, &info) < 0)
+ 	goto out_fd;
++    perfctr_open_init(&info);
+     perfctr->have_rdpmc = (info.cpu_features & PERFCTR_FEATURE_RDPMC) != 0;
+-    perfctr->kstate = mmap(NULL, PAGE_SIZE, PROT_READ,
++    perfctr->kstate = mmap(NULL, PERFCTR_KSTATE_SIZE, PROT_READ,
+ 			   MAP_SHARED, perfctr->fd, 0);
+     if (perfctr->kstate != MAP_FAILED)
+ 	return 0;
+-    munmap((void*)perfctr->kstate, PAGE_SIZE);
++    munmap((void*)perfctr->kstate, PERFCTR_KSTATE_SIZE);
+  out_fd:
+     if (creat)
+ 	vperfctr_unlink(perfctr);
+@@ -149,16 +160,16 @@
+ {
+ #if defined(rdtscl)
+     unsigned long long sum;
+-    unsigned int tsc0, tsc1, now;
++    perfctr_counter_t tsc0, tsc1, now;
+     volatile const struct vperfctr_state *kstate;
+ 
+     kstate = self->kstate;
+     if (likely(kstate->cpu_state.cstatus != 0)) {
+-	tsc0 = kstate->cpu_state.tsc_start;
++	tsc0 = perfctr_get_ctrvar(kstate->cpu_state.tsc_start);
+     retry:
+-	rdtscl(now);
++	rdtscl(now, kstate);
+ 	sum = kstate->cpu_state.tsc_sum;
+-	tsc1 = kstate->cpu_state.tsc_start;
++	tsc1 = perfctr_get_ctrvar(kstate->cpu_state.tsc_start);
+ 	if (likely(tsc1 == tsc0))
+ 	    return sum += (now - tsc0);
+ 	tsc0 = tsc1;
+@@ -178,8 +189,8 @@
+     struct perfctr_sum_ctrs sum_ctrs;
+ #if defined(rdpmcl)
+     unsigned long long sum;
+-    unsigned int start, now;
+-    unsigned int tsc0, tsc1;
++    perfctr_counter_t start, now;
++    perfctr_counter_t tsc0, tsc1;
+     volatile const struct vperfctr_state *kstate;
+     unsigned int cstatus;
+ 
+@@ -187,12 +198,12 @@
+     cstatus = kstate->cpu_state.cstatus;
+     /* gcc 3.0 generates crap code for likely(E1 && E2) :-( */
+     if (perfctr_cstatus_has_tsc(cstatus) && vperfctr_has_rdpmc(self)) {
+-	 tsc0 = kstate->cpu_state.tsc_start;
++	 tsc0 = perfctr_get_ctrvar(kstate->cpu_state.tsc_start);
+     retry:
+-	 rdpmcl(kstate->cpu_state.pmc[i].map, now);
++	 rdpmcl(kstate->cpu_state.pmc[i].map, now, i, kstate);
+ 	 start = kstate->cpu_state.pmc[i].start;
+ 	 sum = kstate->cpu_state.pmc[i].sum;
+-	 tsc1 = kstate->cpu_state.tsc_start;
++	 tsc1 = perfctr_get_ctrvar(kstate->cpu_state.tsc_start);
+ 	 if (likely(tsc1 == tsc0)) {
+ 	      return sum += (now - start);
+ 	 }
+@@ -215,7 +226,7 @@
+ 		       struct perfctr_sum_ctrs *sum)
+ {
+ #if defined(rdtscl) && defined(rdpmcl)
+-    unsigned int tsc0, now;
++    perfctr_counter_t tsc0, now;
+     unsigned int cstatus, nrctrs;
+     volatile const struct vperfctr_state *kstate;
+     int i;
+@@ -228,14 +239,14 @@
+     nrctrs = perfctr_cstatus_nrctrs(cstatus);
+     if (perfctr_cstatus_has_tsc(cstatus) && (!nrctrs || vperfctr_has_rdpmc(self))) {
+     retry:
+-	tsc0 = kstate->cpu_state.tsc_start;
+-	rdtscl(now);
++	tsc0 = perfctr_get_ctrvar(kstate->cpu_state.tsc_start);
++	rdtscl(now, kstate);
+ 	sum->tsc = kstate->cpu_state.tsc_sum + (now - tsc0);
+ 	for(i = nrctrs; --i >= 0;) {
+-	    rdpmcl(kstate->cpu_state.pmc[i].map, now);
++	    rdpmcl(kstate->cpu_state.pmc[i].map, now, i, kstate);
+ 	    sum->pmc[i] = kstate->cpu_state.pmc[i].sum + (now - kstate->cpu_state.pmc[i].start);
+ 	}
+-	if (likely(tsc0 == kstate->cpu_state.tsc_start))
++	if (likely(tsc0 == perfctr_get_ctrvar(kstate->cpu_state.tsc_start)))
+ 	    return 0;
+ 	goto retry;
+     }
+@@ -284,7 +295,7 @@
+ 
+ void vperfctr_close(struct vperfctr *perfctr)
+ {
+-    munmap((void*)perfctr->kstate, PAGE_SIZE);
++    munmap((void*)perfctr->kstate, PERFCTR_KSTATE_SIZE);
+     close(perfctr->fd);
+     free(perfctr);
+ }
+--- perfctr-2.6.42.2/usr.lib/x86.c
++++ perfctr-2.6.42.2-new/usr.lib/x86.c
+@@ -2,9 +2,112 @@
+  * x86-specific perfctr library procedures.
+  *
+  * Copyright (C) 1999-2010  Mikael Pettersson
++ *
++ * Support for Xen/Dom
++ * Copyright (C) 2010 Ruslan Nikolaev
+  */
+ #include <stdio.h>
+ #include "libperfctr.h"
++#include "x86.h"
++
++#if (__GNUC__ < 2) ||  (__GNUC__ == 2 && __GNUC_MINOR__ < 96)
++#define __builtin_expect(x, expected_value) (x)
++#endif
++
++#define likely(x)       __builtin_expect((x),1)
++#define unlikely(x)     __builtin_expect((x),0)
++
++#ifdef CONFIG_PERFCTR_WIDECTR
++unsigned int pmc_shift = 64; /* Non-initialized. */
++
++void perfctr_open_init(const struct perfctr_info *info)
++{
++    if (pmc_shift != 64) /* Already initialized */
++        return;
++    pmc_shift = 24; /* Default PMC: 64-24=40 bits */
++    /* Override the default value of pmc_shift */
++    switch (info->cpu_type) {
++#if !defined(__x86_64__)
++      case PERFCTR_X86_CYRIX_MII:
++      case PERFCTR_X86_AMD_K7:
++        pmc_shift = 16; /* 64-16=48 bits */
++        break;
++      case PERFCTR_X86_INTEL_P4:
++      case PERFCTR_X86_INTEL_P4M2:
++        pmc_shift = 32; /* 64-32=32 bits */
++        break;
++#endif
++      case PERFCTR_X86_INTEL_P4M3:
++        pmc_shift = 32; /* 64-32=32 bits */
++        break;
++      case PERFCTR_X86_AMD_K8:
++      case PERFCTR_X86_AMD_K8C:
++      case PERFCTR_X86_AMD_FAM10H:
++      case PERFCTR_X86_INTEL_NHLM:
++      case PERFCTR_X86_INTEL_WSTMR:
++        pmc_shift = 16; /* 64-16=48 bits */
++        break;
++    }
++}
++#endif
++
++/*
++ * For Xen/Dom configuration, we use special rdtsc and rdpmc operations
++ * which virtualize counters on per-VCPU basis.
++ */
++
++#ifdef CONFIG_PERFCTR_XEN
++perfctr_counter_t _rdtscl(volatile const struct vperfctr_state *state)
++{
++    volatile const struct perfctr_cpu_state *cpu_state;
++    perfctr_counter_t sum;
++    perfctr_counter_t tsc0, tsc1, now;
++    unsigned int eax, edx;
++
++    cpu_state = &state->hypervisor_perfctr[state->cpu_state.smp_id];
++    if (likely(cpu_state->cstatus != 0)) {
++        tsc0 = perfctr_get_ctrvar(cpu_state->tsc_start);
++    retry:
++        __asm__ __volatile__("rdtsc" : "=a"(eax), "=d" (edx));
++        now = perfctr_counter_join(eax, edx);
++        sum = cpu_state->tsc_sum;
++        cpu_state = &state->hypervisor_perfctr[state->cpu_state.smp_id];
++        tsc1 = perfctr_get_ctrvar(cpu_state->tsc_start);
++        if (likely(tsc1 == tsc0))
++            return sum += (now - tsc0);
++        tsc0 = tsc1;
++        goto retry; /* better gcc code than with a do{}while() loop */
++    }
++    return cpu_state->tsc_sum;
++}
++
++perfctr_counter_t _rdpmcl(volatile const struct vperfctr_state *state, unsigned int idx, unsigned int ctr)
++{
++    volatile const struct perfctr_cpu_state *cpu_state;
++    unsigned long long sum;
++    perfctr_counter_t start, now;
++    perfctr_counter_t tsc0, tsc1;
++    unsigned int eax, edx;
++
++    cpu_state = &state->hypervisor_perfctr[state->cpu_state.smp_id];
++    if (likely(cpu_state->cstatus != 0)) {
++        tsc0 = perfctr_get_ctrvar(cpu_state->tsc_start);
++    retry:
++        __asm__ __volatile__("rdpmc" : "=a"(eax), "=d" (edx) : "c" (ctr));
++        now = perfctr_counter_join(eax, edx);
++        perfctr_pmc_extend(now);
++        start = cpu_state->pmc[idx].start;
++        sum = cpu_state->pmc[idx].sum;
++        cpu_state = &state->hypervisor_perfctr[state->cpu_state.smp_id];
++        tsc1 = perfctr_get_ctrvar(cpu_state->tsc_start);
++        if (likely(tsc0 == tsc1))
++            return sum += (now - start);
++        tsc0 = tsc1;
++        goto retry;
++    }
++    return 0;
++}
++#endif
+ 
+ struct cpuid {	/* The field order must not be changed. */
+     unsigned int eax;
+--- perfctr-2.6.42.2/usr.lib/x86.h
++++ perfctr-2.6.42.2-new/usr.lib/x86.h
+@@ -2,16 +2,61 @@
+  * x86-specific code for performance counters library.
+  *
+  * Copyright (C) 1999-2004  Mikael Pettersson
++ *
++ * Support for Xen/Dom
++ * Copyright (C) 2010 Ruslan Nikolaev
+  */
+ #ifndef __LIB_PERFCTR_X86_H
+ #define __LIB_PERFCTR_X86_H
+ 
++#include "libperfctr.h"
++
+ #define PAGE_SIZE	4096
+ 
+-#define rdtscl(low)	\
+-	__asm__ __volatile__("rdtsc" : "=a"(low) : : "edx")
+-#define rdpmcl(ctr,low)	\
+-	__asm__ __volatile__("rdpmc" : "=a"(low) : "c"(ctr) : "edx")
++#ifdef CONFIG_PERFCTR_WIDECTR
++extern unsigned int pmc_shift;
++# define perfctr_counter_join(eax,edx) (((unsigned long long)(eax)) | (((unsigned long long)(edx)) << 32))
++# define perfctr_pmc_extend(now)       ((now) = (((perfctr_scounter_t)(now)) << pmc_shift) >> pmc_shift)
++void perfctr_open_init(const struct perfctr_info *info);
++#else
++# define perfctr_counter_join(eax,edx) (eax)
++# define perfctr_pmc_extend(now)
++# define perfctr_open_init(info)         do{}while(0)
++#endif
++
++#ifdef CONFIG_PERFCTR_XEN
++
++perfctr_counter_t _rdtscl(volatile const struct vperfctr_state *state);
++perfctr_counter_t _rdpmcl(volatile const struct vperfctr_state *state, unsigned int idx, unsigned int ctr);
++
++/* Paravirtualized version of rdtsc and rdpmc */
++# define rdtscl(val,s) (val = _rdtscl(s))
++# define rdpmcl(ctr,val,i,s) (val = _rdpmcl(s,i,ctr))
++
++#else
++
++static inline perfctr_counter_t _rdtscl(void)
++{
++	unsigned int eax, edx;
++	__asm__ __volatile__("rdtsc" : "=a"(eax), "=d" (edx));
++	return perfctr_counter_join(eax, edx);
++}
++
++static inline perfctr_counter_t _rdpmcl(unsigned int ctr)
++{
++	perfctr_counter_t now;
++	unsigned int eax, edx;
++	__asm__ __volatile__("rdpmc" : "=a"(eax), "=d" (edx) : "c" (ctr));
++	now = perfctr_counter_join(eax, edx);
++	perfctr_pmc_extend(now);
++	return now;
++}
++
++/* Ordinary version of rdtsc and rdpmc */
++# define rdtscl(val,s) (val = _rdtscl())
++# define rdpmcl(ctr,val,i,s) (val = _rdpmcl(ctr))
++
++#endif
+ 
+ #if defined(__x86_64__)
+ #define vperfctr_has_rdpmc(vperfctr)	(1)

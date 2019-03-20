@@ -1,0 +1,129 @@
+diff -urN old/benchspec/CPU2006/447.dealII/src/include/lac/vector.templates.h new/benchspec/CPU2006/447.dealII/src/include/lac/vector.templates.h
+--- old/benchspec/CPU2006/447.dealII/src/include/lac/vector.templates.h	2010-04-09 20:07:18.000000000 -0400
++++ new/benchspec/CPU2006/447.dealII/src/include/lac/vector.templates.h	2010-04-09 20:09:58.000000000 -0400
+@@ -24,7 +24,7 @@
+ #include <cmath>
+ #include <algorithm>
+ #include <iostream>
+-
++#include <cstring>
+ 
+ /*
+   Note that in this file, we use std::fabs, std::sqrt, etc
+diff -urN old/benchspec/CPU2006/447.dealII/src/quadrature.cc new/benchspec/CPU2006/447.dealII/src/quadrature.cc
+--- old/benchspec/CPU2006/447.dealII/src/quadrature.cc	2010-04-09 20:07:18.000000000 -0400
++++ new/benchspec/CPU2006/447.dealII/src/quadrature.cc	2010-04-09 20:09:58.000000000 -0400
+@@ -15,7 +15,7 @@
+ #include <grid/geometry_info.h>
+ #include <base/quadrature.h>
+ #include <base/memory_consumption.h>
+-
++#include <cstdlib>
+ #include <cmath>
+ #include <iterator>
+ 
+diff -urN old/benchspec/CPU2006/483.xalancbmk/src/ElemNumber.cpp new/benchspec/CPU2006/483.xalancbmk/src/ElemNumber.cpp
+--- old/benchspec/CPU2006/483.xalancbmk/src/ElemNumber.cpp	2010-04-09 20:07:37.000000000 -0400
++++ new/benchspec/CPU2006/483.xalancbmk/src/ElemNumber.cpp	2010-04-09 20:10:11.000000000 -0400
+@@ -15,7 +15,7 @@
+  */
+ #include "ElemNumber.hpp"
+ 
+-
++#include <string.h>
+ 
+ #include <xercesc/sax/AttributeList.hpp>
+ 
+diff -urN old/benchspec/CPU2006/483.xalancbmk/src/FormatterToHTML.cpp new/benchspec/CPU2006/483.xalancbmk/src/FormatterToHTML.cpp
+--- old/benchspec/CPU2006/483.xalancbmk/src/FormatterToHTML.cpp	2010-04-09 20:07:38.000000000 -0400
++++ new/benchspec/CPU2006/483.xalancbmk/src/FormatterToHTML.cpp	2010-04-09 20:10:13.000000000 -0400
+@@ -23,7 +23,7 @@
+ // Class header file.
+ #include "FormatterToHTML.hpp"
+ 
+-
++#include <string.h>
+ 
+ #include <cassert>
+ 
+diff -urN old/benchspec/CPU2006/483.xalancbmk/src/XalanDOMString.cpp new/benchspec/CPU2006/483.xalancbmk/src/XalanDOMString.cpp
+--- old/benchspec/CPU2006/483.xalancbmk/src/XalanDOMString.cpp	2010-04-09 20:07:37.000000000 -0400
++++ new/benchspec/CPU2006/483.xalancbmk/src/XalanDOMString.cpp	2010-04-09 20:10:12.000000000 -0400
+@@ -16,7 +16,7 @@
+ 
+ #include "XalanDOMString.hpp"
+ 
+-
++#include <string.h>
+ 
+ #include <cassert>
+ 
+diff -urN old/benchspec/CPU2006/483.xalancbmk/src/XalanExe.cpp new/benchspec/CPU2006/483.xalancbmk/src/XalanExe.cpp
+--- old/benchspec/CPU2006/483.xalancbmk/src/XalanExe.cpp	2010-04-09 20:07:38.000000000 -0400
++++ new/benchspec/CPU2006/483.xalancbmk/src/XalanExe.cpp	2010-04-09 20:10:14.000000000 -0400
+@@ -16,7 +16,7 @@
+ 
+ #include <PlatformDefinitions.hpp>
+ 
+-
++#include <string.h>
+ 
+ #include <cstdlib>
+ #if defined(XALAN_CLASSIC_IOSTREAMS)
+diff -urN old/MANIFEST new/MANIFEST
+--- old/MANIFEST	2010-04-09 20:06:00.000000000 -0400
++++ new/MANIFEST	2010-04-09 20:09:07.000000000 -0400
+@@ -5138,7 +5138,7 @@
+ e0e66106478cac70a926c0eb967241c8 * 000028B4 benchspec/CPU2006/447.dealII/src/include/lac/swappable_vector.h
+ f1e3d4d439cea9114a034c325d632598 * 000017FC benchspec/CPU2006/447.dealII/src/include/lac/swappable_vector.templates.h
+ df49186e35098be61df0509946a6fcea * 000071D7 benchspec/CPU2006/447.dealII/src/include/lac/vector.h
+-2fc7edf72e0cff7e8566a7a84b2290d7 * 00004A2E benchspec/CPU2006/447.dealII/src/include/lac/vector.templates.h
++4faa64057786b3af28814b3aa435b7ff * 00004A40 benchspec/CPU2006/447.dealII/src/include/lac/vector.templates.h
+ dbeda376183939d06ca4d45fdecaff35 * 00001E04 benchspec/CPU2006/447.dealII/src/include/lac/vector_memory.h
+ 9d2d2434ac8f4a088e7ca79c233ca67f * 00001B75 benchspec/CPU2006/447.dealII/src/include/multigrid/mg_base.h
+ 82d32e68554e148caeadc07c4d246d29 * 00005BA1 benchspec/CPU2006/447.dealII/src/include/multigrid/mg_dof_accessor.h
+@@ -5192,7 +5192,7 @@
+ 36bb594853dc95a3314106475c37fc33 * 000015BE benchspec/CPU2006/447.dealII/src/polynomials_bdm.cc
+ eab45564468ec4b5c669fdee6cc6a66b * 00000A10 benchspec/CPU2006/447.dealII/src/polynomials_p.cc
+ 7244b4bf7993e5d9e03e866933dc4732 * 00000280 benchspec/CPU2006/447.dealII/src/programid.cc
+-037832eef61f503a04058ef90513746e * 000073D1 benchspec/CPU2006/447.dealII/src/quadrature.cc
++17791ed310a4e5ac7f05e7501c6f146e * 000073E3 benchspec/CPU2006/447.dealII/src/quadrature.cc
+ 79b7e49c2d1343a21542a0db811664a1 * 00003132 benchspec/CPU2006/447.dealII/src/quadrature_lib.cc
+ 31681c1a8979a4fe65c6e4bc3a6fdeb9 * 000031DC benchspec/CPU2006/447.dealII/src/solution_transfer.cc
+ f7cda7354ed46b71fe65b8e56a9da7a3 * 000017C5 benchspec/CPU2006/447.dealII/src/solver_control.cc
+@@ -8648,7 +8648,7 @@
+ 3204b521a9a3337b7b5ae925af4089ed * 00000F9D benchspec/CPU2006/483.xalancbmk/src/ElemLiteralResult.hpp
+ 2ebfeca0dab337fed7f0a695e5d6c2a2 * 00000E3B benchspec/CPU2006/483.xalancbmk/src/ElemMessage.cpp
+ a3ab7d4d4b2427ec67a6b769ef54519b * 000009EE benchspec/CPU2006/483.xalancbmk/src/ElemMessage.hpp
+-4a125359c751a951a09f6f43c0615a44 * 0000C161 benchspec/CPU2006/483.xalancbmk/src/ElemNumber.cpp
++afb322d0b53474fa50c28925a7be25f3 * 0000C174 benchspec/CPU2006/483.xalancbmk/src/ElemNumber.cpp
+ c289fb1c6ee6ae9a54329e3c4b3c5f72 * 00003141 benchspec/CPU2006/483.xalancbmk/src/ElemNumber.hpp
+ a1ca06a7db97051cd1c935a20eab2227 * 00000817 benchspec/CPU2006/483.xalancbmk/src/ElemOtherwise.cpp
+ f81604d1fc97795ff0bddf53a064022b * 000006B6 benchspec/CPU2006/483.xalancbmk/src/ElemOtherwise.hpp
+@@ -8701,7 +8701,7 @@
+ 743aed5d155f5dd8abecdcd2d23aee9e * 00001722 benchspec/CPU2006/483.xalancbmk/src/FormatterToDOM.cpp
+ 2de7a8b8d8e93595a4a8c88212cb5cf6 * 00001162 benchspec/CPU2006/483.xalancbmk/src/FormatterToDOM.hpp
+ c5cb5a2b3928f7e0b2664772be5480db * 00002212 benchspec/CPU2006/483.xalancbmk/src/FormatterToDeprecatedXercesDOM.cpp
+-b6c1dfe396a73e7cfdeb094280b91a8b * 0000FEDB benchspec/CPU2006/483.xalancbmk/src/FormatterToHTML.cpp
++b41eee0d3baa9fd91aa6872309b713ac * 0000FEEE benchspec/CPU2006/483.xalancbmk/src/FormatterToHTML.cpp
+ 946f2dd0b07ad7e0876a6ce96894c8a4 * 00001BBB benchspec/CPU2006/483.xalancbmk/src/FormatterToHTML.hpp
+ 38993fab566247bc8b027053e5c25232 * 000007BA benchspec/CPU2006/483.xalancbmk/src/FormatterToNull.cpp
+ ce291f571cde707cfc6db95c9c5db8ee * 000009E1 benchspec/CPU2006/483.xalancbmk/src/FormatterToNull.hpp
+@@ -9268,7 +9268,7 @@
+ bad4af032d152f03612d6e778c7a9ad5 * 0000106D benchspec/CPU2006/483.xalancbmk/src/XalanDOMImplementation.hpp
+ 58e7884ed94d5e636c2857ee3b2a6521 * 0000040C benchspec/CPU2006/483.xalancbmk/src/XalanDOMInit.cpp
+ f3d6aa1e882e651541088c32e6cb83f8 * 000004CA benchspec/CPU2006/483.xalancbmk/src/XalanDOMInit.hpp
+-1a2b05b42155713c60aaa8a697b65e69 * 0000562C benchspec/CPU2006/483.xalancbmk/src/XalanDOMString.cpp
++20fc838547326ef254ac5ecbfb93250e * 0000563F benchspec/CPU2006/483.xalancbmk/src/XalanDOMString.cpp
+ 3dba900cc058876a56309ab1f57496da * 00004E85 benchspec/CPU2006/483.xalancbmk/src/XalanDOMString.hpp
+ 859f1244fa98cc0da132e89819578a17 * 0000096D benchspec/CPU2006/483.xalancbmk/src/XalanDOMStringAllocator.cpp
+ ddb0f530bb893df9e5e83a93d3e76b3b * 000010B3 benchspec/CPU2006/483.xalancbmk/src/XalanDOMStringAllocator.hpp
+@@ -9348,7 +9348,7 @@
+ 5d3d564b139bbe9ba65cdc11e08466e5 * 000035BF benchspec/CPU2006/483.xalancbmk/src/XalanEntity.hpp
+ 063aa569a5ddee06b94b4ba564f4c84c * 000004B4 benchspec/CPU2006/483.xalancbmk/src/XalanEntityReference.cpp
+ e8036783774f9cb1ab199ed23267eca4 * 0000332B benchspec/CPU2006/483.xalancbmk/src/XalanEntityReference.hpp
+-9c2332e143b3b478dbf695fd87cb03ee * 00004226 benchspec/CPU2006/483.xalancbmk/src/XalanExe.cpp
++b3b98ab7b2c8c5022d1043e68cea43b3 * 00004239 benchspec/CPU2006/483.xalancbmk/src/XalanExe.cpp
+ 9866a05a5e7b111a80631911453af5e2 * 00001E2C benchspec/CPU2006/483.xalancbmk/src/XalanExtensions.cpp
+ 0502c77fa1b2f747fe6aef1f2e63bccd * 0000079F benchspec/CPU2006/483.xalancbmk/src/XalanExtensions.hpp
+ 363cbe38e6ff7fca992bcbe77f00a275 * 000004B0 benchspec/CPU2006/483.xalancbmk/src/XalanExtensionsDefinitions.hpp
