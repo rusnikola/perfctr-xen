@@ -4,19 +4,9 @@ Copyright (C) 2010-2011, 2013 Ruslan Nikolaev
 
 **_Note: It was last released in 2013; I mirrored it here on GitHub._**
 
-The preferable version is the recent beta version (from 2013) of framework which requires patching of three system components: [Xen 4.2.0](https://downloads.xenproject.org/release/xen/4.2.0/xen-4.2.0.tar.gz), [Linux 3.2.30](https://www.kernel.org/pub/linux/kernel/v3.x/linux-3.2.30.tar.xz) guest, and [perfctr 2.6.42.2](https://github.com/rusnikola/perfctr-xen/tree/master/perfctr-beta/perfctr-2.6.42.2) (my modified version of 2.6.42 which can work with Linux 3.2.30). Note that this is a beta version (which may still contain bugs). Patches for this version are in _perfctr-beta_.
-
-Note that the above perfctr version contains patches for various (including more recent) versions of Linux. Older versions will most likely not work. More recent versions may or may not work, and they are not tested; it is not recommended to use anything other than 3.2.30.
-
-Previous stable version (from 2011) of framework (which is now obsolete due to its reliance on the PvOps 2.6.x kernel) requires patching of:
-[Xen 4.0.1](https://downloads.xenproject.org/release/xen/4.0.1/xen-4.0.1.tar.gz), PvOps Linux 2.6.32.21 guest, and [perfctr 2.6.42](http://user.it.uu.se/~mikpe/linux/perfctr/2.6/perfctr-2.6.42.tar.xz) driver. Follow the installation instructions below to properly set up the framework. Also, make sure that Linux guest you use is of 2.6.32-pvops branch. (It may be necessary to switch it if the default branch is 2.6.31 as described here.) Patches for this version are in _perfctr-obsolete_.
-
-Instructions below are for the older stable version. For the beta
-version, please adjust corresponding names of directories and patches. For the beta version, there may be additional steps mentioned in instructions.
-
 ## Publication
 
-[Paper](https://rusnikola.github.io/files/vee2011.pdf)
+[Paper](https://rusnikola.github.io/files/perfctr-vee11.pdf)
 
 **Perfctr-Xen: a framework for performance counter virtualization.** Ruslan Nikolaev and Godmar Back. In Proceedings of the 7th ACM SIGPLAN/SIGOPS international conference on Virtual Execution Environments (VEE'11), pp.15-26. Newport Beach, CA, USA.
 
@@ -28,6 +18,16 @@ this material are those of the author(s) and do not necessarily reflect the
 views of the National Science Foundation._
 
 ## Installation
+
+The preferable version is the recent beta version (from 2013) of framework which requires patching of three system components: [Xen 4.2.0](https://downloads.xenproject.org/release/xen/4.2.0/xen-4.2.0.tar.gz), [Linux 3.2.30](https://www.kernel.org/pub/linux/kernel/v3.x/linux-3.2.30.tar.xz) guest, and [perfctr 2.6.42.2](https://github.com/rusnikola/perfctr-xen/tree/master/perfctr-beta/perfctr-2.6.42.2) (my modified version of 2.6.42 which can work with Linux 3.2.30). Note that this is a beta version (which may still contain bugs). Patches for this version are in _perfctr-beta_.
+
+Note that the above perfctr version contains patches for various (including more recent) versions of Linux. Older versions will most likely not work. More recent versions may or may not work, and they are not tested; it is not recommended to use anything other than 3.2.30.
+
+Previous stable version (from 2011) of framework (which is now obsolete due to its reliance on the PvOps 2.6.x kernel) requires patching of:
+[Xen 4.0.1](https://downloads.xenproject.org/release/xen/4.0.1/xen-4.0.1.tar.gz), PvOps Linux 2.6.32.21 guest, and [perfctr 2.6.42](http://user.it.uu.se/~mikpe/linux/perfctr/2.6/perfctr-2.6.42.tar.xz) driver. Follow the installation instructions below to properly set up the framework. Also, make sure that Linux guest you use is of 2.6.32-pvops branch. (It may be necessary to switch it if the default branch is 2.6.31 as described here.) Patches for this version are in _perfctr-obsolete_.
+
+The instructions below are for the older stable version. For the beta
+version, please adjust corresponding names of directories and patches. For the beta version, there may be additional steps mentioned in the instructions.
 
 1. Download from this website the latest version of patches for the corresponding versions of Linux/Xen/Perfctr mentioned above.
 
@@ -199,4 +199,3 @@ Overflows: total(59) > max(104) || total(59) < min(14) overflow.c               
 ## Caution
 
 Do not use the _perfctr_ option (in the GRUB configuration) and _vpmu_ simultaneously. The latter one enables hardware counters virtualization in HVM mode, and it should never be used with the modified perfctr.
-
